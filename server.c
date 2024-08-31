@@ -18,8 +18,7 @@ WINDOW *main_win; // ncurses窗口指针
 typedef struct
 {
     int fd;                // 客户端套接字
-    long total_bytes_up;   // 累计上传数据量
-    long total_bytes_down; // 累计下载数据量
+    long total_bytes;      // 累计数据量
     struct timeval start;  // 统计开始时间
     pthread_mutex_t lock;  // 锁用于线程安全
     char ip[INET_ADDRSTRLEN];
@@ -27,18 +26,14 @@ typedef struct
 } client_info_t;
 
 client_info_t clients[MAX_CLIENTS];
-static double server_uptime = 0.0; // 服务器运行时间
-int client_count = 0; // 设备连接数
-pthread_mutex_t client_count_lock;
 
 // 计算带宽并在ncurses窗口中显示
 void handle_alarm(int sig) {
-    double bandwidth_mbps_up, bandwidth_mbps_down;
+    double bandwidth_mbps;
     struct timeval now, elapsed;
     
     gettimeofday(&now, NULL);
     int rank = 1;  // 用于显示的排名
-    
 
     // 遍历客户端信息数组
     for (size_t i = 0; i < MAX_CLIENTS; i++) {
@@ -49,17 +44,15 @@ void handle_alarm(int sig) {
             double elapsed_time = elapsed.tv_sec + elapsed.tv_usec / 1000000.0;
 
             if (elapsed_time > 0) {  // 确保时间间隔不为0
-                bandwidth_mbps_up = (clients[i].total_bytes_up * 8.0) / elapsed_time / 1e6;
-                bandwidth_mbps_down = (clients[i].total_bytes_down * 8.0) / elapsed_time / 1e6;
+                bandwidth_mbps = (clients[i].total_bytes * 8.0) / elapsed_time / 1e6;
             } else {
-                bandwidth_mbps_up = 0;
-                bandwidth_mbps_down = 0;
+                bandwidth_mbps = 0;
             }
 
             // 只显示活跃的客户端
-            if (clients[i].total_bytes_up > 0 || bandwidth_mbps_up > 0 || bandwidth_mbps_down > 0) {
-                mvwprintw(main_win, rank + 9, 1, "| [%2d] |%-15s|  %d | %8.2f Mbps | %8.2f Mbps |", 
-                    rank, clients[i].ip, clients[i].port, bandwidth_mbps_up, bandwidth_mbps_down);
+            if (clients[i].total_bytes > 0 || bandwidth_mbps > 0) {
+                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s\t|  %d | %8.2f Mbps | %.2f Mbps |", 
+                    rank, clients[i].ip, clients[i].port, bandwidth_mbps, 66666.66);
                 rank++;  // 只增加已显示的客户端排名
             }
 
@@ -67,8 +60,7 @@ void handle_alarm(int sig) {
 
             // 如果采样间隔太小，保留数据量而不重置
             if (elapsed_time >= 1.0) {
-                clients[i].total_bytes_up = 0;
-                clients[i].total_bytes_down = 0;
+                clients[i].total_bytes = 0;
                 gettimeofday(&clients[i].start, NULL);  // 重置起始时间
             }
 
@@ -76,11 +68,9 @@ void handle_alarm(int sig) {
         }
     }
 
-    server_uptime += 1.0;
-    mvwprintw(main_win, 5, 1, "ConnectDevices: %d\tServer uptime: %.2fs\tno-limit", client_count, server_uptime);
     // 清除多余的行（如果有客户端断开，行数可能会减少）
     for (int j = rank; j <= MAX_CLIENTS; j++) {
-        mvwprintw(main_win, j + 9, 1, "|      | \t\t|        | \t\t | \t\t |"); // 清空行内容
+        mvwprintw(main_win, j + 10, 1, "|      | \t\t|        | \t\t  | \t\t  |"); // 清空行内容
     }
     wrefresh(main_win);
 }
@@ -92,34 +82,13 @@ void* handle_client(void* arg) {
     ssize_t len;
 
     while ((len = recv(client->fd, buffer, BUFFER_SIZE, 0)) > 0) {
-        buffer[len] = '\0';
-        if (strncmp(buffer, "DOWN_BANDWIDTH", 14) == 0) {
-            double bandwidth_down_mbps;
-            sscanf(buffer, "DOWN_BANDWIDTH %lf Mbps", &bandwidth_down_mbps);
-
-            pthread_mutex_lock(&client->lock);
-            client->total_bytes_down = bandwidth_down_mbps;
-            pthread_mutex_unlock(&client->lock);
-        } else {
-            pthread_mutex_lock(&client->lock);
-            client->total_bytes_up += len;
-            pthread_mutex_unlock(&client->lock);
-
-            send(client->fd, buffer, len, 0); // down
-        }
+        pthread_mutex_lock(&client->lock);
+        client->total_bytes += len;
+        pthread_mutex_unlock(&client->lock);
     }
-    if (len == 0) {
-        printf("client disconnected: %s\n", client->ip);
-    } else {
-        perror("recv failed");
-    }
-
-    pthread_mutex_lock(&client_count_lock);
-    client_count --;
-    pthread_mutex_unlock(&client_count_lock);
 
     close(client->fd);
-    pthread_mutex_destroy(&client->lock);
+    // free(client);
     pthread_exit(NULL);
 }
 
@@ -131,8 +100,6 @@ int main() {
     int thread_count = 0;
 
     memset(clients, 0, sizeof(clients)); // 初始化客户端信息数组
-
-    pthread_mutex_init(&client_count_lock, NULL);
 
     // 创建 TCP 套接字
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
@@ -165,17 +132,16 @@ int main() {
     cbreak();
     noecho();
     curs_set(0);
-    main_win = newwin(MAX_CLIENTS * 2 + 4, 75, 0, 0);
+    main_win = newwin(MAX_CLIENTS * 2 + 4, 80, 0, 0);
     box(main_win, 0, 0);
     mvwprintw(main_win, 1, 1, "Server listening on port %d...", SERVER_PORT);
-    mvwprintw(main_win, 1, 1, "Server    addr: \t192.168.18.125\t\tport: 5201");
+    mvwprintw(main_win, 1, 1, "Server    addr: \t192.168.18.125\t\tport: 8888");
     mvwprintw(main_win, 2, 1, "Broadcast addr: \t192.168.18.255\t\tport: 5005"); // 广播地址 为实现广播功能
     mvwprintw(main_win, 3, 1, "Test      time: \t500 sec        \t\tPakg size: 1470 bit");
-    // mvwprintw(main_win, 4, 1, "Connect:     double \t\tLimit: no limit");
+    mvwprintw(main_win, 4, 1, "Mode:    double \t\t\t\tLimit: no limit");
     mvwprintw(main_win, 6, 1, "pre        next \tset-limit\t\texit(press 'q')");
     mvwprintw(main_win, 8, 1, "| RANK | IP\t\t|  PORT  | UP\t\t | DOWN\t\t |");
-    // mvwprintw(main_win, 9, 1, "----------------------------------------------------------------");
-    mvwprintw(main_win, 9, 1, "================================================================");
+    mvwprintw(main_win, 9, 1, "-----------------------------------------------------------------");
     wrefresh(main_win);
 
     struct itimerval timer;
@@ -210,18 +176,13 @@ int main() {
             if (clients[i].fd == 0) {
                 client = &clients[i];
                 client->fd = *client_fd;
-                client->total_bytes_up = 0;
+                client->total_bytes = 0;
                 gettimeofday(&client->start, NULL); // 查看当前时间
                 pthread_mutex_init(&client->lock, NULL);
 
                 // 记录 IP 端口
                 inet_ntop(AF_INET, &(client_addr.sin_addr), client->ip, INET_ADDRSTRLEN);
                 client->port = ntohs(client_addr.sin_port);
-
-                // 更新设备连接数
-                pthread_mutex_lock(&client_count_lock);
-                client_count ++;
-                pthread_mutex_unlock(&client_count_lock);
                 break;
             }
         }
@@ -234,7 +195,6 @@ int main() {
                 perror("pthread_create failed");
                 close(*client_fd);
                 free(client_fd);
-                pthread_mutex_destroy(&client->lock);
             }
 
             // 防止线程数量超过上限
@@ -253,7 +213,5 @@ int main() {
 
     close(server_fd);
     endwin();
-    pthread_mutex_destroy(&client_count_lock);
-
     return 0;
 }
