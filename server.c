@@ -70,7 +70,7 @@ void handle_alarm(int sig) {
 
     // 清除多余的行（如果有客户端断开，行数可能会减少）
     for (int j = rank; j <= MAX_CLIENTS; j++) {
-        mvwprintw(main_win, j + 10, 1, "|      | \t\t|        | \t\t  | \t\t  |"); // 清空行内容
+        mvwprintw(main_win, j + 10, 1, "|      | \t\t|        | \t\t | \t\t |"); // 清空行内容
     }
     wrefresh(main_win);
 }
@@ -163,7 +163,7 @@ int main() {
             exit(EXIT_FAILURE);
         }
 
-        *client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
+        *client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len); // 接收客户端请求
         if (*client_fd < 0) {
             perror("accept failed");
             free(client_fd);
