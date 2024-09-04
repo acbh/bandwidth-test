@@ -2,15 +2,9 @@
 #define CLIENT_HANDLER_H
 
 #include <pthread.h>
-
-typedef struct {
-    int fd;
-    long total_bytes_up;
-    long total_bytes_down;
-    pthread_mutex_t lock;
-    double limit_factor;
-} client_info_t;
+#include <arpa/inet.h>
+#include "server.h"
 
 void* handle_client(void* arg);
 
-#endif
+#endif // CLIENT_HANDLER_H
