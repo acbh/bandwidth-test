@@ -1,6 +1,10 @@
 #include "server.h"
 #include "ui.h"
 #include "client_handler.h"
+#include <string.h>
+#include <sys/time.h>
+#include <signal.h>
+#include <unistd.h>
 
 int main() {
     struct sockaddr_in server_addr;

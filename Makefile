@@ -7,7 +7,7 @@ all: $(TARGET)
 
 $(TARGET): $(OBJ)
 	$(CC) $(CFLAGS) -o $(TARGET) $(OBJ)
-    
+	
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
