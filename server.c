@@ -171,6 +171,27 @@ void handle_keyboard_event(int ch) {
             }
             break;
     }
+
+    // 清除之前的高亮
+    mvwprintw(main_win, 6, 1, "Mode:    %s \t\t\t\tLimit: %s", get_mode_string(current_mode), speed_limit == -1 ? "no limit" : "limited");
+
+    // 重新应用高亮
+    if (selected_option == 0) {
+        wattron(main_win, A_REVERSE); // 启用反转
+        mvwprintw(main_win, 6, 1, "Mode:    %s", get_mode_string(current_mode));
+        wattroff(main_win, A_REVERSE); // 关闭反转
+    } else {
+        mvwprintw(main_win, 6, 1, "Mode:    %s", get_mode_string(current_mode));
+    }
+
+    if (selected_option == 1) {
+        wattron(main_win, A_REVERSE); // 启用反转
+        mvwprintw(main_win, 7, 1, "Limit: %s", speed_limit == -1 ? "no limit" : limit_str);
+        wattroff(main_win, A_REVERSE); // 关闭反转
+    } else {
+        mvwprintw(main_win, 7, 1, "Limit: %s", speed_limit == -1 ? "no limit" : limit_str);
+    }
+
     wrefresh(main_win);
 }
 
@@ -198,7 +219,7 @@ int main(int argc, char *argv[]) {
     }
 
     if (protocol == NULL || mode == NULL) {
-        fprintf(stderr, "Usage: %s -p <tcp/udp> -m <up/down/double`>\n", argv[0]);
+        fprintf(stderr, "Usage: %s -p <tcp/udp> -m <up/down/double>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
