@@ -22,6 +22,7 @@ typedef enum {
 WINDOW * main_win;
 test_mode_t current_mode = MODE_DOUBLE;
 int speed_limit = -1;
+int is_tcp = 0;  // 用于判断是否是 TCP 连接
 
 typedef struct {
     int fd;
@@ -36,6 +37,43 @@ typedef struct {
 
 client_info_t clients[MAX_CLIENTS];
 
+void * handle_upload(void* arg) {
+    client_info_t* client = (client_info_t*)arg;
+    char buffer[BUFFER_SIZE];
+    ssize_t len;
+
+    while ((len = recv(client->fd, buffer, BUFFER_SIZE, 0)) > 0) {
+        pthread_mutex_lock(&client->lock);
+        client->total_bytes_up += len;
+        pthread_mutex_unlock(&client->lock);
+    }
+
+    close(client->fd);
+    client->active = 0;
+    pthread_exit(NULL);
+}
+
+void * handle_download(void* arg) {
+    client_info_t* client = (client_info_t*)arg;
+    char buffer[BUFFER_SIZE];
+    memset(buffer, 'D', BUFFER_SIZE);
+
+    while (client->active) {
+        ssize_t len = send(client->fd, buffer, BUFFER_SIZE, 0);
+        if (len > 0) {
+            pthread_mutex_lock(&client->lock);
+            client->total_bytes_down += len;
+            pthread_mutex_unlock(&client->lock);
+        } else {
+            break;
+        }
+    }
+
+    close(client->fd);
+    client->active = 0;
+    pthread_exit(NULL);
+}
+
 const char* get_mode_string(test_mode_t mode) {
     switch (mode) {
         case MODE_DOUBLE: return "double";
@@ -46,7 +84,7 @@ const char* get_mode_string(test_mode_t mode) {
 }
 
 void handle_alarm(int sig) {
-    double bandwidth_mbps;
+    double up_bandwidth_mbps, down_bandwidth_mbps;
     struct timeval now, elapsed;
 
     gettimeofday(&now, NULL);
@@ -60,18 +98,14 @@ void handle_alarm(int sig) {
             double elapsed_time = elapsed.tv_sec + elapsed.tv_usec / 1000000.0;
 
             if (elapsed_time > 0) {
-                if (current_mode == MODE_DOUBLE || current_mode == MODE_UP) {
-                    bandwidth_mbps = (clients[i].total_bytes_up * 8.0) / elapsed_time / 1e6;
-                } else if (current_mode == MODE_DOWN) {
-                    bandwidth_mbps = (clients[i].total_bytes_down * 8.0) / elapsed_time / 1e6;
-                } else {
-                    bandwidth_mbps = 0;
-                }
+                up_bandwidth_mbps = (clients[i].total_bytes_up * 8.0) / elapsed_time / 1e6;
+                down_bandwidth_mbps = (clients[i].total_bytes_down * 8.0) / elapsed_time / 1e6;
             } else {
-                bandwidth_mbps = 0;
+                up_bandwidth_mbps = 0;
+                down_bandwidth_mbps = 0;
             }
 
-            mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s\t| %d | %8.2f Mbps |", rank, clients[i].ip, clients[i].port, bandwidth_mbps);
+            mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s\t| %d | %8.2f Mbps | %8.2f Mbps |", rank, clients[i].ip, clients[i].port, up_bandwidth_mbps, down_bandwidth_mbps);
             rank ++;
             wrefresh(main_win);
 
@@ -86,91 +120,60 @@ void handle_alarm(int sig) {
     }
 
     for (int j = rank; j <= MAX_CLIENTS; j++) {
-        mvwprintw(main_win, j + 10, 1, "|      | \t\t| \t\t | \t\t |");
+        mvwprintw(main_win, j + 10, 1, "|      | \t\t| \t | \t\t | \t\t |");
     }
     wrefresh(main_win);
 }
 
-void* handle_client(void * arg) {
-    client_info_t* client = (client_info_t*)arg;
-    char buffer[BUFFER_SIZE];
-    ssize_t len;
-    struct timeval last_send_time;
-
-    gettimeofday(&last_send_time, NULL);
-
-    while ((len = recv(client->fd, buffer, BUFFER_SIZE, 0)) > 0) {
-        pthread_mutex_lock(&client->lock);
-
-        if (speed_limit > 0) {
-            struct timeval now;
-            gettimeofday(&now, NULL);
-            long delta = (now.tv_sec - last_send_time.tv_sec) * 1000000 + (now.tv_usec - last_send_time.tv_usec);
-            long limit_interval = (long)((1e6 / speed_limit) * BUFFER_SIZE / (1470 * 8));
-
-            if (delta < limit_interval) {
-                usleep(limit_interval - delta);
-            }
-            gettimeofday(&last_send_time, NULL);
-        }
-
-        if (current_mode == MODE_DOUBLE || current_mode == MODE_UP) {
-            client->total_bytes_up += len;
-        }else if (current_mode == MODE_DOWN) {
-            client->total_bytes_down += len;
-        }
-
-        pthread_mutex_unlock(&client->lock);
-    }
-
-    close(client->fd);
-    client->active = 0;
-    pthread_exit(NULL);
-}
-
 void handle_keyboard_event(int ch) {
     static int selected_option = 0;
-    char limit_str[10];
+    char limit_str[10] = {0};  
+    long temp_limit;           
 
     switch (ch) {
         case KEY_LEFT:
-            if (selected_option > 0) selected_option --;
+            if (selected_option > 0) selected_option--;
             break;
         case KEY_RIGHT:
-            if (selected_option < 1) selected_option ++;
+            if (selected_option < 1) selected_option++;
             break;
-        case 10:
+        case 10:  // Enter key
             if (selected_option == 0) {
+                // 切换模式
                 switch (current_mode) {
                     case MODE_DOUBLE: current_mode = MODE_UP; break;
                     case MODE_UP: current_mode = MODE_DOWN; break;
                     case MODE_DOWN: current_mode = MODE_DOUBLE; break;
                 }
-                mvwprintw(main_win, 6, 1, "Mode: %s \t\t\t\t Limit: %s", get_mode_string(current_mode), speed_limit == -1 ? "nolimit":"limited");
             } else if (selected_option == 1) {
                 mvwprintw(main_win, 7, 1, "Enter new limit (0 for no limit): ");
                 wrefresh(main_win);
-                // 这里怎么做的输入？
+
                 echo();
-                wgetnstr(main_win, limit_str, sizeof(limit_str) - 1);
+                wgetnstr(main_win, limit_str, sizeof(limit_str) - 1); 
                 noecho();
-                speed_limit = atoi(limit_str);
-                if (speed_limit < 0 || speed_limit > 100) {
+
+                char* endptr;
+                temp_limit = strtol(limit_str, &endptr, 10);  
+                if (*endptr != '\0' || temp_limit < 0 || temp_limit > 1000) {  
                     speed_limit = -1;
+                    mvwprintw(main_win, 7, 1, "Invalid input. Limit set to no limit.       ");
+                } else {
+                    speed_limit = temp_limit;
+                    mvwprintw(main_win, 7, 1, "Limit set to %ld Mbps.                     ", speed_limit);
                 }
-                mvwprintw(main_win, 6, 1, "Mode:    %s \t\t\t\tLimit: %s", get_mode_string(current_mode), speed_limit == -1 ? "nolimit":limit_str);
             }
             break;
     }
 
-    mvwprintw(main_win, 6, 1, "Mode: %s \t\t\t\tLimit: %s", get_mode_string(current_mode), speed_limit == -1 ? "nolimit":"limited");
+    mvwprintw(main_win, 6, 1, "Mode: %s \t\t\t\tLimit: %s", get_mode_string(current_mode), speed_limit == -1 ? "nolimit" : limit_str);
 
     if (selected_option == 0) {
         wattron(main_win, A_REVERSE);
-        mvwprintw(main_win, 6, 1, "Mode:    %s", get_mode_string(current_mode));
+        mvwprintw(main_win, 6, 1, "Mode: %s", get_mode_string(current_mode));
         wattroff(main_win, A_REVERSE);
     } else {
-        mvwprintw(main_win, 6, 1, "Mode:    %s", get_mode_string(current_mode));
+        mvwprintw(main_win, 6, 1, "Mode: %s", get_mode_string(current_mode));
     }
 
     if (selected_option == 1) {
@@ -181,7 +184,7 @@ void handle_keyboard_event(int ch) {
         mvwprintw(main_win, 7, 1, "Limit: %s", speed_limit == -1 ? "no limit" : limit_str);
     }
 
-    wrefresh(main_win);
+    wrefresh(main_win);  
 }
 
 int main(int argc, char * argv[]) {
@@ -213,18 +216,18 @@ int main(int argc, char * argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // 这里只考虑了udp？
-    int is_udp = strcmp(protocol, "udp") == 0;
+    is_tcp = strcmp(protocol, "tcp") == 0;
+
     int is_up = strcmp(mode, "up") == 0;
     int is_down = strcmp(mode, "down") == 0;
     int is_double = strcmp(mode, "double") == 0;
 
-    if (is_udp && is_up) {
+    if (is_up) {
         current_mode = MODE_UP;
-    } else if (is_udp && is_down) {
+    } else if (is_down) {
         current_mode = MODE_DOWN;
-    } else if (is_udp && is_double) {
-    current_mode = MODE_DOUBLE;
+    } else if (is_double) {
+        current_mode = MODE_DOUBLE;
     } else {
         fprintf(stderr, "Invalid mode or protocol\n");
         exit(EXIT_FAILURE);
@@ -245,7 +248,7 @@ int main(int argc, char * argv[]) {
     mvwprintw(main_win, 10, 1, "|------|---------------|--------|---------------|---------------|");
     wrefresh(main_win);
 
-    server_fd = socket(AF_INET, is_udp ? SOCK_DGRAM:SOCK_STREAM, 0);
+    server_fd = socket(AF_INET, is_tcp ? SOCK_STREAM : SOCK_DGRAM, 0);
 
     if (server_fd < 0) {
         perror("socket");
@@ -265,7 +268,7 @@ int main(int argc, char * argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    if (!is_udp) {
+    if (is_tcp) {
         if (listen(server_fd, MAX_CLIENTS) < 0) {
             perror("listen");
             close(server_fd);
@@ -282,28 +285,32 @@ int main(int argc, char * argv[]) {
     timer.it_value.tv_usec = 0;
     setitimer(ITIMER_REAL, &timer, NULL);
 
-    int i;
-    for (int i = 0; i <MAX_CLIENTS; i ++) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
         pthread_mutex_init(&clients[i].lock, NULL);
     }
 
     while (1) {
         int client_fd;
-        if (is_udp) {
-            char buffer[BUFFER_SIZE];
-            client_fd = recvfrom(server_fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client_addr, &client_addr_len);
-        } else {
+
+        if (is_tcp) {
             client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
             if (client_fd < 0) {
                 perror("accept");
                 continue;
             }
+        } else {
+            char buffer[BUFFER_SIZE];
+            client_fd = recvfrom(server_fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client_addr, &client_addr_len);
+            if (client_fd < 0) {
+                perror("recvfrom");
+                continue;
+            }
         }
 
-        for (i = 0; i < MAX_CLIENTS; i++) {
+        for (int i = 0; i < MAX_CLIENTS; i++) {
             if (!clients[i].active) {
                 pthread_mutex_lock(&clients[i].lock);
-                clients[i].fd = client_fd;
+                clients[i].fd = is_tcp ? client_fd : server_fd;
                 clients[i].total_bytes_up = 0;
                 clients[i].total_bytes_down = 0;
 
@@ -314,12 +321,13 @@ int main(int argc, char * argv[]) {
                 clients[i].active = 1;
                 pthread_mutex_unlock(&clients[i].lock);
 
-                pthread_create(&threads[i], NULL, handle_client, &clients[i]);
+                pthread_create(&threads[i], NULL, handle_upload, &clients[i]);
+                pthread_create(&threads[i], NULL, handle_download, &clients[i]);
                 break;
             }
         }
 
-        if (i == MAX_CLIENTS) {
+        if (is_tcp && client_fd != -1) {
             close(client_fd);
         }
 
@@ -329,7 +337,7 @@ int main(int argc, char * argv[]) {
         }
     }
 
-    for (i = 0; i < MAX_CLIENTS; i++) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
         pthread_mutex_destroy(&clients[i].lock);
     }
 
