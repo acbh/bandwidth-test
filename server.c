@@ -103,7 +103,6 @@ void* handle_client_download(void* arg) {
     while (1) {
         ssize_t len = send(client->fd, buffer, BUFFER_SIZE, 0);  // 向客户端发送数据
         if (len <= 0) {
-            // perror("send failed");
             break;
         }
 
@@ -116,7 +115,25 @@ void* handle_client_download(void* arg) {
     pthread_exit(NULL);
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    int mode = 0; // 0: UP, 1: DOWN, 2: DOUBLE
+
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <up/down/double>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    if (strcmp(argv[1], "up") == 0) {
+        mode = 0; // UP
+    } else if (strcmp(argv[1], "down") == 0) {
+        mode = 1; // DOWN
+    } else if (strcmp(argv[1], "double") == 0) {
+        mode = 2; // DOUBLE
+    } else {
+        fprintf(stderr, "Invalid mode: %s. Use 'up', 'down', or 'double'.\n", argv[1]);
+        exit(EXIT_FAILURE);
+    }
+
     int server_fd;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
@@ -209,14 +226,17 @@ int main() {
         free(client_fd); 
 
         if (client != NULL) {
-            // 创建上传处理线程
-            if (pthread_create(&threads[thread_count++], NULL, handle_client_upload, client) != 0) {
-                perror("pthread_create for upload failed");
+            // 根据选择的模式，创建相应的线程
+            if (mode == 0 || mode == 2) {  // UP 模式或 DOUBLE 模式都启动上传线程
+                if (pthread_create(&threads[thread_count++], NULL, handle_client_upload, client) != 0) {
+                    perror("pthread_create for upload failed");
+                }
             }
-            
-            // 创建下载处理线程
-            if (pthread_create(&threads[thread_count++], NULL, handle_client_download, client) != 0) {
-                perror("pthread_create for download failed");
+
+            if (mode == 1 || mode == 2) {  // DOWN 模式或 DOUBLE 模式都启动下载线程
+                if (pthread_create(&threads[thread_count++], NULL, handle_client_download, client) != 0) {
+                    perror("pthread_create for download failed");
+                }
             }
 
             // 防止线程数量超过上限

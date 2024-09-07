@@ -50,7 +50,25 @@ void* receive_data(void* arg) {
     return NULL;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        fprintf(stderr, "Usage: %s <up/down/double>\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
+
+    int mode = 0; // 0: UP, 1: DOWN, 2: DOUBLE
+
+    if (strcmp(argv[1], "up") == 0) {
+        mode = 0; // 上传模式
+    } else if (strcmp(argv[1], "down") == 0) {
+        mode = 1; // 下载模式
+    } else if (strcmp(argv[1], "double") == 0) {
+        mode = 2; // 双向模式
+    } else {
+        fprintf(stderr, "Invalid mode: %s. Use 'up', 'down', or 'double'.\n", argv[1]);
+        exit(EXIT_FAILURE);
+    }
+
     int sockfd;
     struct sockaddr_in server_addr;
     struct timeval end_time;
@@ -83,19 +101,29 @@ int main() {
     };
     gettimeofday(&transfer_info.start_time, NULL);
 
-    // 创建发送和接收数据的线程
-    pthread_create(&send_thread, NULL, send_data, &transfer_info);
-    pthread_create(&receive_thread, NULL, receive_data, &transfer_info);
+    // 根据模式启动相应的线程
+    if (mode == 0 || mode == 2) {  // 上传模式或双向模式，启动发送线程
+        pthread_create(&send_thread, NULL, send_data, &transfer_info);
+    }
+
+    if (mode == 1 || mode == 2) {  // 下载模式或双向模式，启动接收线程
+        pthread_create(&receive_thread, NULL, receive_data, &transfer_info);
+    }
 
     // 等待用户按下回车键结束测试
     printf("Press Enter to stop the test...\n");
     getchar();
 
     // 关闭线程
-    pthread_cancel(send_thread);
-    pthread_cancel(receive_thread);
-    pthread_join(send_thread, NULL);
-    pthread_join(receive_thread, NULL);
+    if (mode == 0 || mode == 2) {
+        pthread_cancel(send_thread);
+        pthread_join(send_thread, NULL);
+    }
+    
+    if (mode == 1 || mode == 2) {
+        pthread_cancel(receive_thread);
+        pthread_join(receive_thread, NULL);
+    }
 
     // 计算带宽
     gettimeofday(&end_time, NULL);
