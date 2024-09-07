@@ -9,90 +9,108 @@
 #define SERVER_PORT 5201
 #define BUFFER_SIZE 1470
 
-int running = 1;  // 控制上传和下载线程的运行状态
+// 记录传输状态
+typedef struct {
+    int sockfd;
+    long total_bytes_sent;
+    long total_bytes_received;
+    struct timeval start_time;
+} transfer_info_t;
 
-void* client_upload(void* arg) {
-    int sockfd = *((int*)arg);
+// 发送数据（上传）
+void* send_data(void* arg) {
+    transfer_info_t* info = (transfer_info_t*)arg;
     char buffer[BUFFER_SIZE];
-    memset(buffer, 'U', BUFFER_SIZE);  // 上传时发送的填充数据
+    memset(buffer, 'A', sizeof(buffer));  // 填充缓冲区数据
 
-    while (running) {
-        ssize_t len = send(sockfd, buffer, BUFFER_SIZE, 0);
-        if (len <= 0) {
-            perror("Failed to send data to server");
+    while (1) {
+        ssize_t n = send(info->sockfd, buffer, BUFFER_SIZE, 0);  // 发送数据
+        if (n <= 0) {
             break;
         }
-        // 你可以加入速率限制的逻辑，例如 usleep()
+        info->total_bytes_sent += n;  // 累积上传的字节数
     }
-    pthread_exit(NULL);
+
+    return NULL;
 }
 
-void* client_download(void* arg) {
-    int sockfd = *((int*)arg);
+// 接收数据（下载）
+void* receive_data(void* arg) {
+    transfer_info_t* info = (transfer_info_t*)arg;
     char buffer[BUFFER_SIZE];
 
-    while (running) {
-        ssize_t len = recv(sockfd, buffer, BUFFER_SIZE, 0);
-        if (len <= 0) {
-            perror("Failed to receive data from server");
+    while (1) {
+        ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0);  // 接收数据
+        if (n <= 0) {
             break;
         }
-        // 接收到的数据可以在此进行处理
+        info->total_bytes_received += n;  // 累积下载的字节数
     }
-    pthread_exit(NULL);
+
+    return NULL;
 }
 
-int main(int argc, char* argv[]) {
-    char* server_ip;
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <server_ip>\n", argv[0]);
-        exit(EXIT_FAILURE);
-    }
-    server_ip = argv[1];
+int main() {
+    int sockfd;
+    struct sockaddr_in server_addr;
+    struct timeval end_time;
+    pthread_t send_thread, receive_thread;
 
-    // 创建 socket
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        perror("Socket creation failed");
+    // 创建 TCP 套接字
+    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("socket creation failed");
         exit(EXIT_FAILURE);
     }
 
     // 配置服务器地址
-    struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
-    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
-        perror("Invalid server IP address");
-        close(sockfd);
-        exit(EXIT_FAILURE);
-    }
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
     // 连接服务器
     if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Connection to server failed");
+        perror("connect failed");
         close(sockfd);
         exit(EXIT_FAILURE);
     }
-    printf("Connected to server %s on port %d\n", server_ip, SERVER_PORT);
 
-    // 启动上传和下载线程
-    pthread_t upload_thread, download_thread;
-    pthread_create(&upload_thread, NULL, client_upload, &sockfd);
-    pthread_create(&download_thread, NULL, client_download, &sockfd);
+    // 初始化传输信息
+    transfer_info_t transfer_info = {
+        .sockfd = sockfd,
+        .total_bytes_sent = 0,
+        .total_bytes_received = 0,
+    };
+    gettimeofday(&transfer_info.start_time, NULL);
 
-    // 等待用户按下回车键来终止客户端
+    // 创建发送和接收数据的线程
+    pthread_create(&send_thread, NULL, send_data, &transfer_info);
+    pthread_create(&receive_thread, NULL, receive_data, &transfer_info);
+
+    // 等待用户按下回车键结束测试
     printf("Press Enter to stop the test...\n");
     getchar();
-    running = 0;  // 停止上传和下载线程
 
-    // 等待线程结束
-    pthread_join(upload_thread, NULL);
-    pthread_join(download_thread, NULL);
+    // 关闭线程
+    pthread_cancel(send_thread);
+    pthread_cancel(receive_thread);
+    pthread_join(send_thread, NULL);
+    pthread_join(receive_thread, NULL);
 
-    // 关闭 socket
+    // 计算带宽
+    gettimeofday(&end_time, NULL);
+    double elapsed_time = (end_time.tv_sec - transfer_info.start_time.tv_sec) +
+                          ((end_time.tv_usec - transfer_info.start_time.tv_usec) / 1000000.0);
+
+    double upload_bandwidth = (transfer_info.total_bytes_sent * 8.0) / elapsed_time / 1e6;
+    double download_bandwidth = (transfer_info.total_bytes_received * 8.0) / elapsed_time / 1e6;
+
+    printf("Total data sent: %ld bytes\n", transfer_info.total_bytes_sent);
+    printf("Total data received: %ld bytes\n", transfer_info.total_bytes_received);
+    printf("Upload Bandwidth: %.2f Mbps\n", upload_bandwidth);
+    printf("Download Bandwidth: %.2f Mbps\n", download_bandwidth);
+
+    // 关闭套接字
     close(sockfd);
-    printf("Client stopped\n");
-
     return 0;
 }
