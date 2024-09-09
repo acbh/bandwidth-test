@@ -24,10 +24,19 @@ typedef struct {
     char ip[INET_ADDRSTRLEN];   // 客户端IP地址
     int port;                   // 客户端端口
     struct sockaddr_in client_addr;  // 客户端UDP地址
+    int is_active; // 判断当前客户端是否活跃 用于计数
 } client_info_t;
 
 client_info_t clients[MAX_CLIENTS];
 int is_tcp = 1; // 默认TCP
+char server_ip[INET_ADDRSTRLEN] = "127.0.0.1";
+// int current_mode = 0;
+double bandwidth_limit_mbps = 0.0;
+pthread_mutex_t bandwidth_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t client_count_lock = PTHREAD_MUTEX_INITIALIZER;
+int connected_clients = 0;
+int run_time = 0;
+int mode = 0; // 0 UP 1 DOWN 3 DOUBLE
 
 // 计算带宽并在ncurses窗口中显示
 void handle_alarm(int sig) {
@@ -104,6 +113,18 @@ void* handle_client_upload(void* arg) {
     }
 
     close(client->fd);
+
+    // 设备数减一 仅仅在设备活跃时执行
+    pthread_mutex_lock(&client_count_lock);
+    if (client->is_active) {
+        connected_clients --;
+        client->is_active = 0;
+    }
+    pthread_mutex_unlock(&client_count_lock);
+    // 更新界面
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
+    wrefresh(main_win);
+
     pthread_exit(NULL);
 }
 
@@ -141,6 +162,18 @@ void* handle_client_download(void* arg) {
     }
 
     close(client->fd);
+
+    // 设备数减一
+    pthread_mutex_lock(&client_count_lock);
+    if (client->is_active) {
+        connected_clients --;
+        client->is_active = 0;
+    }
+    pthread_mutex_unlock(&client_count_lock);
+    // 更新界面
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
+    wrefresh(main_win);
+
     pthread_exit(NULL);
 }
 
@@ -222,9 +255,14 @@ int main(int argc, char* argv[]) {
     curs_set(0);
     main_win = newwin(MAX_CLIENTS * 2 + 4, 80, 0, 0);
     box(main_win, 0, 0);
-    mvwprintw(main_win, 1, 1, "Server listening on port %d...", SERVER_PORT);
-    mvwprintw(main_win, 8, 1, "| RANK | IP\t\t|  PORT  | UP\t\t | DOWN\t\t |");
-    mvwprintw(main_win, 9, 1, "------------------------------------------------------------");
+    mvwprintw(main_win, 1, 1, "Server    IP:\t\t%s\t Server    Port:     %d", server_ip, SERVER_PORT);
+    mvwprintw(main_win, 2, 1, "Broadcast IP:\t\t%s\t Broadcast Port:     %d", server_ip, 5202);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+    mvwprintw(main_win, 4, 1, "Current Mode: \t%s", mode == 0 ? "UP" : (mode == 1) ? "DOWN" : "DOUBLE");
+    mvwprintw(main_win, 5, 1, "Bandwidth Limit: %.2f Mbps", bandwidth_limit_mbps);
+    
+    mvwprintw(main_win, 9, 1, "| RANK | IP\t\t|  PORT  | UP\t\t | DOWN\t\t |");
+    mvwprintw(main_win,10, 1, "----------------------------------------------------------------");
     wrefresh(main_win);
 
     // 设置定时器，每秒触发一次
@@ -266,6 +304,8 @@ int main(int argc, char* argv[]) {
                 client->fd = *client_fd;
                 client->total_bytes_up = 0;
                 client->total_bytes_down = 0;
+                client->is_active = 1;
+
                 gettimeofday(&client->start, NULL); // 获取当前时间
                 pthread_mutex_init(&client->lock, NULL);
 
@@ -273,6 +313,14 @@ int main(int argc, char* argv[]) {
                 inet_ntop(AF_INET, &(client_addr.sin_addr), client->ip, INET_ADDRSTRLEN);
                 client->port = ntohs(client_addr.sin_port);
                 client->client_addr = client_addr; // UDP模式下需要存储客户端地址
+
+                pthread_mutex_lock(&client_count_lock);
+                connected_clients ++;
+                pthread_mutex_unlock(&client_count_lock);
+                // 更新界面
+                mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
+                wrefresh(main_win);
+
                 break;
             }
         }
