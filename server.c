@@ -89,27 +89,17 @@ void handle_alarm(int sig) {
     wrefresh(main_win);
 }
 
-// 处理客户端上传数据
-void* handle_client_upload(void* arg) {
+// 处理TCP客户端上传数据
+void* handle_tcp_client_upload(void* arg) {
     client_info_t* client = (client_info_t*)arg;
     char buffer[BUFFER_SIZE];
     ssize_t len;
 
-    if (is_tcp) {
-        // TCP 模式上传处理
-        while ((len = recv(client->fd, buffer, BUFFER_SIZE, 0)) > 0) {
-            pthread_mutex_lock(&client->lock);
-            client->total_bytes_up += len;  // 记录上传的字节数
-            pthread_mutex_unlock(&client->lock);
-        }
-    } else {
-        // UDP 模式上传处理
-        socklen_t addr_len = sizeof(client->client_addr);
-        while ((len = recvfrom(client->fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client->client_addr, &addr_len)) > 0) {
-            pthread_mutex_lock(&client->lock);
-            client->total_bytes_up += len;  // 记录上传的字节数
-            pthread_mutex_unlock(&client->lock);
-        }
+    // TCP 模式上传处理
+    while ((len = recv(client->fd, buffer, BUFFER_SIZE, 0)) > 0) {
+        pthread_mutex_lock(&client->lock);
+        client->total_bytes_up += len;  // 记录上传的字节数
+        pthread_mutex_unlock(&client->lock);
     }
 
     close(client->fd);
@@ -128,37 +118,22 @@ void* handle_client_upload(void* arg) {
     pthread_exit(NULL);
 }
 
-// 处理客户端下载数据
-void* handle_client_download(void* arg) {
+// 处理TCP客户端下载数据
+void* handle_tcp_client_download(void* arg) {
     client_info_t* client = (client_info_t*)arg;
     char buffer[BUFFER_SIZE];
     memset(buffer, 'D', BUFFER_SIZE);  // 模拟下载数据
     ssize_t len;
 
-    if (is_tcp) {
-        // TCP 模式下载处理
-        while (1) {
-            len = send(client->fd, buffer, BUFFER_SIZE, 0);  // 向客户端发送数据
-            if (len <= 0) {
-                break;
-            }
-
-            pthread_mutex_lock(&client->lock);
-            client->total_bytes_down += len;  // 记录下载的字节数
-            pthread_mutex_unlock(&client->lock);
+    while (1) {
+        len = send(client->fd, buffer, BUFFER_SIZE, 0);  // 向客户端发送数据
+        if (len <= 0) {
+            break;
         }
-    } else {
-        // UDP 模式下载处理
-        while (1) {
-            len = sendto(client->fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client->client_addr, sizeof(client->client_addr));
-            if (len <= 0) {
-                break;
-            }
 
-            pthread_mutex_lock(&client->lock);
-            client->total_bytes_down += len;  // 记录下载的字节数
-            pthread_mutex_unlock(&client->lock);
-        }
+        pthread_mutex_lock(&client->lock);
+        client->total_bytes_down += len;  // 记录下载的字节数
+        pthread_mutex_unlock(&client->lock);
     }
 
     close(client->fd);
@@ -177,9 +152,79 @@ void* handle_client_download(void* arg) {
     pthread_exit(NULL);
 }
 
-int main(int argc, char* argv[]) {
-    int mode = 0; // 0: UP, 1: DOWN, 2: DOUBLE
+// 处理UDP客户端上传和下载数据
+void* handle_udp_clients(void* arg) {
+    int server_fd = *(int*)arg;
+    char buffer[BUFFER_SIZE];
+    ssize_t len;
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
 
+    while (1) {
+        len = recvfrom(server_fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client_addr, &addr_len);
+        if (len < 0) {
+            perror("recvfrom failed");
+            continue;
+        } // 服务器必须先接收客户端的包 获取客户端ip port
+
+        client_info_t* client = NULL;
+        for (size_t i = 0; i < MAX_CLIENTS; i ++) {
+            if (clients[i].is_active && memcmp(&clients[i].client_addr, &client_addr, sizeof(client_addr)) == 0) {
+                client = &clients[i];
+                break;
+            }
+        }
+
+        if (client == NULL) {
+            for (size_t i = 0; i < MAX_CLIENTS; i ++) {
+                if (!clients[i].is_active) {
+                    client = &clients[i];
+                    client->total_bytes_up = 0;
+                    client->total_bytes_down = 0;
+                    client->is_active = 1;
+                    client->client_addr = client_addr;
+
+                    gettimeofday(&client->start, NULL);
+                    pthread_mutex_init(&client->lock, NULL);
+
+                    inet_ntop(AF_INET, &(client_addr.sin_addr), client->ip, INET_ADDRSTRLEN);
+                    client->port = ntohs(client_addr.sin_port);
+
+                    pthread_mutex_lock(&client_count_lock);
+                    connected_clients ++;
+                    pthread_mutex_unlock(&client_count_lock);
+
+                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
+                    wrefresh(main_win);
+
+                    break;
+                }
+            }
+        }
+
+        if (client == NULL) {
+            printf("Max clients reached. Connection refused.\n");
+            continue;
+        }
+
+        if (mode == 0 || mode == 2) {
+            pthread_mutex_lock(&client->lock);
+            client->total_bytes_up += len;
+            pthread_mutex_unlock(&client->lock);
+        }
+        if (mode == 1 || mode == 2) {
+            len = sendto(server_fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client->client_addr, addr_len);
+            if (len < 0) {
+                perror("sendto failed");
+            }
+            pthread_mutex_lock(&client->lock);
+            client->total_bytes_down += len;
+            pthread_mutex_unlock(&client->lock);
+        }
+    }
+}
+
+int main(int argc, char* argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <tcp/udp> <up/down/double>\n", argv[0]);
         exit(EXIT_FAILURE);
@@ -205,11 +250,41 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    // 初始化ncurses
+    initscr();
+    cbreak();
+    noecho();
+    curs_set(0);
+    main_win = newwin(MAX_CLIENTS * 2 + 4, 80, 0, 0);
+    box(main_win, 0, 0);
+    mvwprintw(main_win, 1, 1, "Server    IP:\t\t%s\t Server    Port:     %d", server_ip, SERVER_PORT);
+    mvwprintw(main_win, 2, 1, "Broadcast IP:\t\t%s\t Broadcast Port:     %d", server_ip, 5202);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+    mvwprintw(main_win, 4, 1, "Current Mode: \t%s", mode == 0 ? "UP" : (mode == 1) ? "DOWN" : "DOUBLE");
+    mvwprintw(main_win, 5, 1, "Bandwidth Limit: %.2f Mbps", bandwidth_limit_mbps);
+    
+    mvwprintw(main_win, 9, 1, "| RANK | IP\t\t|  PORT  | UP\t\t | DOWN\t\t |");
+    mvwprintw(main_win,10, 1, "----------------------------------------------------------------");
+    wrefresh(main_win);
+
+    // 设置定时器，每秒触发一次
+    struct itimerval timer;
+    signal(SIGALRM, handle_alarm);
+    timer.it_value.tv_sec = 1;
+    timer.it_value.tv_usec = 0;
+    timer.it_interval.tv_sec = 1;
+    timer.it_interval.tv_usec = 0;
+    setitimer(ITIMER_REAL, &timer, NULL);
+
     int server_fd;
-    struct sockaddr_in server_addr, client_addr;
-    socklen_t client_addr_len = sizeof(client_addr);
+    struct sockaddr_in server_addr;
+    // // TCP client 放到后面初始化
+    // struct sockaddr_in server_addr, client_addr;
+    // socklen_t client_addr_len = sizeof(client_addr);
     pthread_t threads[MAX_CLIENTS * 2];
     int thread_count = 0;
+
+    pthread_t udp_thread;
 
     memset(clients, 0, sizeof(clients)); // 初始化客户端信息数组
 
@@ -246,44 +321,18 @@ int main(int argc, char* argv[]) {
             close(server_fd);
             exit(EXIT_FAILURE);
         }
-    }
 
-    // 初始化ncurses
-    initscr();
-    cbreak();
-    noecho();
-    curs_set(0);
-    main_win = newwin(MAX_CLIENTS * 2 + 4, 80, 0, 0);
-    box(main_win, 0, 0);
-    mvwprintw(main_win, 1, 1, "Server    IP:\t\t%s\t Server    Port:     %d", server_ip, SERVER_PORT);
-    mvwprintw(main_win, 2, 1, "Broadcast IP:\t\t%s\t Broadcast Port:     %d", server_ip, 5202);
-    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
-    mvwprintw(main_win, 4, 1, "Current Mode: \t%s", mode == 0 ? "UP" : (mode == 1) ? "DOWN" : "DOUBLE");
-    mvwprintw(main_win, 5, 1, "Bandwidth Limit: %.2f Mbps", bandwidth_limit_mbps);
-    
-    mvwprintw(main_win, 9, 1, "| RANK | IP\t\t|  PORT  | UP\t\t | DOWN\t\t |");
-    mvwprintw(main_win,10, 1, "----------------------------------------------------------------");
-    wrefresh(main_win);
+        while (1) {
+            int* client_fd = malloc(sizeof(int));
+            struct sockaddr_in client_addr;
+            socklen_t client_addr_len = sizeof(client_addr);
 
-    // 设置定时器，每秒触发一次
-    struct itimerval timer;
-    signal(SIGALRM, handle_alarm);
-    timer.it_value.tv_sec = 1;
-    timer.it_value.tv_usec = 0;
-    timer.it_interval.tv_sec = 1;
-    timer.it_interval.tv_usec = 0;
-    setitimer(ITIMER_REAL, &timer, NULL);
-
-    while (1) {
-        int* client_fd = malloc(sizeof(int));
-        if (client_fd == NULL) {
-            perror("malloc failed");
-            close(server_fd);
-            endwin();
-            exit(EXIT_FAILURE);
-        }
-
-        if (is_tcp) {
+            if (client_fd == NULL) {
+                perror("malloc failed");
+                close(server_fd);
+                endwin();
+                exit(EXIT_FAILURE);
+            }
             // TCP模式下接收客户端请求
             *client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
             if (*client_fd < 0) {
@@ -291,66 +340,70 @@ int main(int argc, char* argv[]) {
                 free(client_fd);
                 continue;
             }
-        } else {
-            // UDP模式下无需accept，直接使用recvfrom
-            *client_fd = server_fd;
-        }
 
-        // 寻找空闲的客户端槽
-        client_info_t* client = NULL;
-        for (size_t i = 0; i < MAX_CLIENTS; i++) {
-            if (clients[i].fd == 0) {
-                client = &clients[i];
-                client->fd = *client_fd;
-                client->total_bytes_up = 0;
-                client->total_bytes_down = 0;
-                client->is_active = 1;
+            // 寻找空闲的客户端槽
+            client_info_t* client = NULL;
+            for (size_t i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].fd == 0) {
+                    client = &clients[i];
+                    client->fd = *client_fd;
+                    client->total_bytes_up = 0;
+                    client->total_bytes_down = 0;
+                    client->is_active = 1;
 
-                gettimeofday(&client->start, NULL); // 获取当前时间
-                pthread_mutex_init(&client->lock, NULL);
+                    gettimeofday(&client->start, NULL); // 获取当前时间
+                    pthread_mutex_init(&client->lock, NULL);
 
-                // 记录 IP 和端口
-                inet_ntop(AF_INET, &(client_addr.sin_addr), client->ip, INET_ADDRSTRLEN);
-                client->port = ntohs(client_addr.sin_port);
-                client->client_addr = client_addr; // UDP模式下需要存储客户端地址
+                    // 记录 IP 和端口
+                    inet_ntop(AF_INET, &(client_addr.sin_addr), client->ip, INET_ADDRSTRLEN);
+                    client->port = ntohs(client_addr.sin_port);
+                    client->client_addr = client_addr; // UDP模式下需要存储客户端地址
 
-                pthread_mutex_lock(&client_count_lock);
-                connected_clients ++;
-                pthread_mutex_unlock(&client_count_lock);
-                // 更新界面
-                mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
-                wrefresh(main_win);
+                    pthread_mutex_lock(&client_count_lock);
+                    connected_clients ++;
+                    pthread_mutex_unlock(&client_count_lock);
+                    // 更新界面
+                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
+                    wrefresh(main_win);
 
-                break;
-            }
-        }
-
-        free(client_fd);
-
-        if (client != NULL) {
-            // 根据选择的模式，创建相应的线程
-            if (mode == 0 || mode == 2) {  // UP 模式或 DOUBLE 模式都启动上传线程
-                if (pthread_create(&threads[thread_count++], NULL, handle_client_upload, client) != 0) {
-                    perror("pthread_create for upload failed");
+                    break;
                 }
             }
 
-            if (mode == 1 || mode == 2) {  // DOWN 模式或 DOUBLE 模式都启动下载线程
-                if (pthread_create(&threads[thread_count++], NULL, handle_client_download, client) != 0) {
-                    perror("pthread_create for download failed");
-                }
-            }
+            free(client_fd);
 
-            // 防止线程数量超过上限
-            if (thread_count >= MAX_CLIENTS * 2) {
-                thread_count = 0;
-                for (int i = 0; i < MAX_CLIENTS * 2; i++) {
-                    pthread_join(threads[i], NULL);
+            if (client != NULL) {
+                // 根据选择的模式，创建相应的线程
+                if (mode == 0 || mode == 2) {  // UP 模式或 DOUBLE 模式都启动上传线程
+                    if (pthread_create(&threads[thread_count++], NULL, handle_tcp_client_upload, client) != 0) {
+                        perror("pthread_create for upload failed");
+                    }
                 }
+
+                if (mode == 1 || mode == 2) {  // DOWN 模式或 DOUBLE 模式都启动下载线程
+                    if (pthread_create(&threads[thread_count++], NULL, handle_tcp_client_download, client) != 0) {
+                        perror("pthread_create for download failed");
+                    }
+                }
+
+                // 防止线程数量超过上限
+                if (thread_count >= MAX_CLIENTS * 2) {
+                    thread_count = 0;
+                    for (int i = 0; i < MAX_CLIENTS * 2; i++) {
+                        pthread_join(threads[i], NULL);
+                    }
+                }
+            } else {
+                printf("Max clients reached. Connection refused.\n");
             }
-        } else {
-            printf("Max clients reached. Connection refused.\n");
         }
+    } else {
+        // UDP test
+        if (pthread_create(&udp_thread, NULL, handle_udp_clients, &server_fd) != 0) {
+            perror("Failed to create udp_thread");
+            exit(EXIT_FAILURE);
+        }
+        pthread_join(udp_thread, NULL);
     }
 
     close(server_fd);

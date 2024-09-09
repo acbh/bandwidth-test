@@ -153,6 +153,13 @@ int main(int argc, char* argv[]) {
     };
     gettimeofday(&transfer_info.start_time, NULL);
 
+
+    // UDP 模式下 客户端先发送启动信号
+    if (is_udp && (mode == 1 || mode == 2)) {
+        char init_msg[1] = {0};
+        sendto(sockfd, init_msg, sizeof(init_msg), 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    }
+    
     // 根据模式启动相应的线程
     if (mode == 0 || mode == 2) {  // 上传模式或双向模式，启动发送线程
         pthread_create(&send_thread, NULL, send_data, &transfer_info);
