@@ -23,15 +23,17 @@ typedef struct {
     pthread_mutex_t lock;       // 锁用于线程安全
     char ip[INET_ADDRSTRLEN];   // 客户端IP地址
     int port;                   // 客户端端口
+    struct sockaddr_in client_addr;  // 客户端UDP地址
 } client_info_t;
 
 client_info_t clients[MAX_CLIENTS];
+int is_tcp = 1; // 默认TCP
 
 // 计算带宽并在ncurses窗口中显示
 void handle_alarm(int sig) {
     double up_bandwidth_mbps, down_bandwidth_mbps;
     struct timeval now, elapsed;
-    
+
     gettimeofday(&now, NULL);
     int rank = 1;  // 用于显示的排名
 
@@ -53,7 +55,7 @@ void handle_alarm(int sig) {
 
             // 显示客户端的上传和下载带宽
             if (clients[i].total_bytes_up > 0 || clients[i].total_bytes_down > 0) {
-                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s\t|  %d | %8.2f Mbps | %8.2f Mbps |", 
+                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s\t|  %d | %8.2f Mbps | %8.2f Mbps |",
                     rank, clients[i].ip, clients[i].port, up_bandwidth_mbps, down_bandwidth_mbps);
                 rank++;
             }
@@ -84,10 +86,21 @@ void* handle_client_upload(void* arg) {
     char buffer[BUFFER_SIZE];
     ssize_t len;
 
-    while ((len = recv(client->fd, buffer, BUFFER_SIZE, 0)) > 0) {
-        pthread_mutex_lock(&client->lock);
-        client->total_bytes_up += len;  // 记录上传的字节数
-        pthread_mutex_unlock(&client->lock);
+    if (is_tcp) {
+        // TCP 模式上传处理
+        while ((len = recv(client->fd, buffer, BUFFER_SIZE, 0)) > 0) {
+            pthread_mutex_lock(&client->lock);
+            client->total_bytes_up += len;  // 记录上传的字节数
+            pthread_mutex_unlock(&client->lock);
+        }
+    } else {
+        // UDP 模式上传处理
+        socklen_t addr_len = sizeof(client->client_addr);
+        while ((len = recvfrom(client->fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client->client_addr, &addr_len)) > 0) {
+            pthread_mutex_lock(&client->lock);
+            client->total_bytes_up += len;  // 记录上传的字节数
+            pthread_mutex_unlock(&client->lock);
+        }
     }
 
     close(client->fd);
@@ -99,16 +112,32 @@ void* handle_client_download(void* arg) {
     client_info_t* client = (client_info_t*)arg;
     char buffer[BUFFER_SIZE];
     memset(buffer, 'D', BUFFER_SIZE);  // 模拟下载数据
+    ssize_t len;
 
-    while (1) {
-        ssize_t len = send(client->fd, buffer, BUFFER_SIZE, 0);  // 向客户端发送数据
-        if (len <= 0) {
-            break;
+    if (is_tcp) {
+        // TCP 模式下载处理
+        while (1) {
+            len = send(client->fd, buffer, BUFFER_SIZE, 0);  // 向客户端发送数据
+            if (len <= 0) {
+                break;
+            }
+
+            pthread_mutex_lock(&client->lock);
+            client->total_bytes_down += len;  // 记录下载的字节数
+            pthread_mutex_unlock(&client->lock);
         }
+    } else {
+        // UDP 模式下载处理
+        while (1) {
+            len = sendto(client->fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client->client_addr, sizeof(client->client_addr));
+            if (len <= 0) {
+                break;
+            }
 
-        pthread_mutex_lock(&client->lock);
-        client->total_bytes_down += len;  // 记录下载的字节数
-        pthread_mutex_unlock(&client->lock);
+            pthread_mutex_lock(&client->lock);
+            client->total_bytes_down += len;  // 记录下载的字节数
+            pthread_mutex_unlock(&client->lock);
+        }
     }
 
     close(client->fd);
@@ -118,19 +147,28 @@ void* handle_client_download(void* arg) {
 int main(int argc, char* argv[]) {
     int mode = 0; // 0: UP, 1: DOWN, 2: DOUBLE
 
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <up/down/double>\n", argv[0]);
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <tcp/udp> <up/down/double>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    if (strcmp(argv[1], "up") == 0) {
+    if (strcmp(argv[1], "tcp") == 0) {
+        is_tcp = 1; // TCP模式
+    } else if (strcmp(argv[1], "udp") == 0) {
+        is_tcp = 0; // UDP模式
+    } else {
+        fprintf(stderr, "Invalid protocol: %s. Use 'tcp' or 'udp'.\n", argv[1]);
+        exit(EXIT_FAILURE);
+    }
+
+    if (strcmp(argv[2], "up") == 0) {
         mode = 0; // UP
-    } else if (strcmp(argv[1], "down") == 0) {
+    } else if (strcmp(argv[2], "down") == 0) {
         mode = 1; // DOWN
-    } else if (strcmp(argv[1], "double") == 0) {
+    } else if (strcmp(argv[2], "double") == 0) {
         mode = 2; // DOUBLE
     } else {
-        fprintf(stderr, "Invalid mode: %s. Use 'up', 'down', or 'double'.\n", argv[1]);
+        fprintf(stderr, "Invalid mode: %s. Use 'up', 'down', or 'double'.\n", argv[2]);
         exit(EXIT_FAILURE);
     }
 
@@ -142,10 +180,17 @@ int main(int argc, char* argv[]) {
 
     memset(clients, 0, sizeof(clients)); // 初始化客户端信息数组
 
-    // 创建 TCP 套接字
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("socket creation failed");
-        exit(EXIT_FAILURE);
+    // 创建 TCP 或 UDP 套接字
+    if (is_tcp) {
+        if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+            perror("socket creation failed");
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        if ((server_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+            perror("UDP socket creation failed");
+            exit(EXIT_FAILURE);
+        }
     }
 
     // 配置服务器地址
@@ -161,11 +206,13 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // 监听端口
-    if (listen(server_fd, MAX_CLIENTS) < 0) {
-        perror("listen failed");
-        close(server_fd);
-        exit(EXIT_FAILURE);
+    if (is_tcp) {
+        // TCP模式下监听端口
+        if (listen(server_fd, MAX_CLIENTS) < 0) {
+            perror("listen failed");
+            close(server_fd);
+            exit(EXIT_FAILURE);
+        }
     }
 
     // 初始化ncurses
@@ -198,11 +245,17 @@ int main(int argc, char* argv[]) {
             exit(EXIT_FAILURE);
         }
 
-        *client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len); // 接收客户端请求
-        if (*client_fd < 0) {
-            perror("accept failed");
-            free(client_fd);
-            continue;
+        if (is_tcp) {
+            // TCP模式下接收客户端请求
+            *client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
+            if (*client_fd < 0) {
+                perror("accept failed");
+                free(client_fd);
+                continue;
+            }
+        } else {
+            // UDP模式下无需accept，直接使用recvfrom
+            *client_fd = server_fd;
         }
 
         // 寻找空闲的客户端槽
@@ -213,17 +266,18 @@ int main(int argc, char* argv[]) {
                 client->fd = *client_fd;
                 client->total_bytes_up = 0;
                 client->total_bytes_down = 0;
-                gettimeofday(&client->start, NULL); // 查看当前时间
+                gettimeofday(&client->start, NULL); // 获取当前时间
                 pthread_mutex_init(&client->lock, NULL);
 
                 // 记录 IP 和端口
                 inet_ntop(AF_INET, &(client_addr.sin_addr), client->ip, INET_ADDRSTRLEN);
                 client->port = ntohs(client_addr.sin_port);
+                client->client_addr = client_addr; // UDP模式下需要存储客户端地址
                 break;
             }
         }
 
-        free(client_fd); 
+        free(client_fd);
 
         if (client != NULL) {
             // 根据选择的模式，创建相应的线程

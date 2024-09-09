@@ -15,6 +15,8 @@ typedef struct {
     long total_bytes_sent;
     long total_bytes_received;
     struct timeval start_time;
+    struct sockaddr_in server_addr;  // 仅用于UDP
+    int is_udp;  // 标志当前是否使用UDP
 } transfer_info_t;
 
 // 发送数据（上传）
@@ -23,12 +25,24 @@ void* send_data(void* arg) {
     char buffer[BUFFER_SIZE];
     memset(buffer, 'A', sizeof(buffer));  // 填充缓冲区数据
 
-    while (1) {
-        ssize_t n = send(info->sockfd, buffer, BUFFER_SIZE, 0);  // 发送数据
-        if (n <= 0) {
-            break;
+    if (info->is_udp) {
+        // UDP发送
+        while (1) {
+            ssize_t n = sendto(info->sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&(info->server_addr), sizeof(info->server_addr));
+            if (n <= 0) {
+                break;
+            }
+            info->total_bytes_sent += n;  // 累积上传的字节数
         }
-        info->total_bytes_sent += n;  // 累积上传的字节数
+    } else {
+        // TCP发送
+        while (1) {
+            ssize_t n = send(info->sockfd, buffer, BUFFER_SIZE, 0);  // 发送数据
+            if (n <= 0) {
+                break;
+            }
+            info->total_bytes_sent += n;  // 累积上传的字节数
+        }
     }
 
     return NULL;
@@ -38,34 +52,59 @@ void* send_data(void* arg) {
 void* receive_data(void* arg) {
     transfer_info_t* info = (transfer_info_t*)arg;
     char buffer[BUFFER_SIZE];
+    socklen_t addr_len = sizeof(info->server_addr);
 
-    while (1) {
-        ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0);  // 接收数据
-        if (n <= 0) {
-            break;
+    if (info->is_udp) {
+        // UDP接收
+        while (1) {
+            ssize_t n = recvfrom(info->sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&(info->server_addr), &addr_len);
+            if (n <= 0) {
+                break;
+            }
+            info->total_bytes_received += n;  // 累积下载的字节数
         }
-        info->total_bytes_received += n;  // 累积下载的字节数
+    } else {
+        // TCP接收
+        while (1) {
+            ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0);  // 接收数据
+            if (n <= 0) {
+                break;
+            }
+            info->total_bytes_received += n;  // 累积下载的字节数
+        }
     }
 
     return NULL;
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <up/down/double>\n", argv[0]);
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <tcp/udp> <up/down/double>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
     int mode = 0; // 0: UP, 1: DOWN, 2: DOUBLE
+    int is_udp = 0;  // 默认TCP
 
-    if (strcmp(argv[1], "up") == 0) {
-        mode = 0; // 上传模式
-    } else if (strcmp(argv[1], "down") == 0) {
-        mode = 1; // 下载模式
-    } else if (strcmp(argv[1], "double") == 0) {
-        mode = 2; // 双向模式
+    // 解析协议类型
+    if (strcmp(argv[1], "tcp") == 0) {
+        is_udp = 0;  // TCP
+    } else if (strcmp(argv[1], "udp") == 0) {
+        is_udp = 1;  // UDP
     } else {
-        fprintf(stderr, "Invalid mode: %s. Use 'up', 'down', or 'double'.\n", argv[1]);
+        fprintf(stderr, "Invalid protocol: %s. Use 'tcp' or 'udp'.\n", argv[1]);
+        exit(EXIT_FAILURE);
+    }
+
+    // 解析模式类型
+    if (strcmp(argv[2], "up") == 0) {
+        mode = 0;  // 上传模式
+    } else if (strcmp(argv[2], "down") == 0) {
+        mode = 1;  // 下载模式
+    } else if (strcmp(argv[2], "double") == 0) {
+        mode = 2;  // 双向模式
+    } else {
+        fprintf(stderr, "Invalid mode: %s. Use 'up', 'down', or 'double'.\n", argv[2]);
         exit(EXIT_FAILURE);
     }
 
@@ -74,10 +113,19 @@ int main(int argc, char* argv[]) {
     struct timeval end_time;
     pthread_t send_thread, receive_thread;
 
-    // 创建 TCP 套接字
-    if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        perror("socket creation failed");
-        exit(EXIT_FAILURE);
+    // 创建套接字
+    if (is_udp) {
+        // UDP 套接字
+        if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+            perror("UDP socket creation failed");
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        // TCP 套接字
+        if ((sockfd = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+            perror("TCP socket creation failed");
+            exit(EXIT_FAILURE);
+        }
     }
 
     // 配置服务器地址
@@ -86,11 +134,13 @@ int main(int argc, char* argv[]) {
     server_addr.sin_port = htons(SERVER_PORT);
     server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    // 连接服务器
-    if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("connect failed");
-        close(sockfd);
-        exit(EXIT_FAILURE);
+    if (!is_udp) {
+        // TCP连接
+        if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+            perror("connect failed");
+            close(sockfd);
+            exit(EXIT_FAILURE);
+        }
     }
 
     // 初始化传输信息
@@ -98,6 +148,8 @@ int main(int argc, char* argv[]) {
         .sockfd = sockfd,
         .total_bytes_sent = 0,
         .total_bytes_received = 0,
+        .server_addr = server_addr,
+        .is_udp = is_udp,
     };
     gettimeofday(&transfer_info.start_time, NULL);
 
