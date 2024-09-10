@@ -25,6 +25,7 @@ typedef struct {
     int port;                   // 客户端端口
     struct sockaddr_in client_addr;  // 客户端UDP地址
     int is_active; // 判断当前客户端是否活跃 用于计数
+    struct timeval last_active_time; // 新增字段，记录最后活跃时间 用于心跳包
 } client_info_t;
 
 client_info_t clients[MAX_CLIENTS];
@@ -48,7 +49,8 @@ void handle_alarm(int sig) {
 
     // 遍历客户端信息数组
     for (size_t i = 0; i < MAX_CLIENTS; i++) {
-        if (clients[i].fd != 0) { // 确保该槽位已经分配了客户端
+        // if (clients[i].fd != 0) { // 确保该槽位已经分配了客户端
+        if (clients[i].is_active) {
             pthread_mutex_lock(&clients[i].lock);
 
             timersub(&now, &clients[i].start, &elapsed);  // 计算时间差
@@ -71,7 +73,7 @@ void handle_alarm(int sig) {
 
             wrefresh(main_win); // 刷新窗口以显示更新的信息
 
-            // 如果采样间隔太小，保留数据量而不重置
+            // 重置上传和下载字节数以及起始时间，避免带宽重复累计
             if (elapsed_time >= 1.0) {
                 clients[i].total_bytes_up = 0;
                 clients[i].total_bytes_down = 0;
@@ -112,7 +114,7 @@ void* handle_tcp_client_upload(void* arg) {
     }
     pthread_mutex_unlock(&client_count_lock);
     // 更新界面
-    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
     wrefresh(main_win);
 
     pthread_exit(NULL);
@@ -146,7 +148,7 @@ void* handle_tcp_client_download(void* arg) {
     }
     pthread_mutex_unlock(&client_count_lock);
     // 更新界面
-    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
     wrefresh(main_win);
 
     pthread_exit(NULL);
@@ -156,6 +158,7 @@ void* handle_tcp_client_download(void* arg) {
 void* handle_udp_clients(void* arg) {
     int server_fd = *(int*)arg;
     char buffer[BUFFER_SIZE];
+    char buffer_response[BUFFER_SIZE];
     ssize_t len;
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
@@ -165,17 +168,17 @@ void* handle_udp_clients(void* arg) {
         if (len < 0) {
             perror("recvfrom failed");
             continue;
-        } // 服务器必须先接收客户端的包 获取客户端ip port
+        }
 
         client_info_t* client = NULL;
         for (size_t i = 0; i < MAX_CLIENTS; i ++) {
-            if (clients[i].is_active && memcmp(&clients[i].client_addr, &client_addr, sizeof(client_addr)) == 0) {
+            if (clients[i].is_active && memcmp(&clients[i].client_addr, &client_addr, sizeof(client_addr)) == 0 && clients[i].client_addr.sin_port == client_addr.sin_port) {
                 client = &clients[i];
                 break;
             }
         }
 
-        if (client == NULL) {
+        if (client == NULL) { // 寻找空闲的客户端槽
             for (size_t i = 0; i < MAX_CLIENTS; i ++) {
                 if (!clients[i].is_active) {
                     client = &clients[i];
@@ -194,13 +197,19 @@ void* handle_udp_clients(void* arg) {
                     connected_clients ++;
                     pthread_mutex_unlock(&client_count_lock);
 
-                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
+                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t UdpRunningtime:     %d", connected_clients, run_time);
                     wrefresh(main_win);
+
+                    // 发送确认包给客户端
+                    char ack_msg[] = "ACK";
+                    sendto(server_fd, ack_msg, sizeof(ack_msg), 0, (struct sockaddr*)&client->client_addr, addr_len);
 
                     break;
                 }
             }
         }
+
+        gettimeofday(&client->last_active_time, NULL); // 如果客户端存在 更新最后活跃时间
 
         if (client == NULL) {
             printf("Max clients reached. Connection refused.\n");
@@ -213,14 +222,46 @@ void* handle_udp_clients(void* arg) {
             pthread_mutex_unlock(&client->lock);
         }
         if (mode == 1 || mode == 2) {
-            len = sendto(server_fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client->client_addr, addr_len);
+            memset(buffer_response, 'S', BUFFER_SIZE);
+
+            len = sendto(server_fd, buffer_response, BUFFER_SIZE, 0, (struct sockaddr*)&client->client_addr, addr_len);
             if (len < 0) {
                 perror("sendto failed");
+                break;
             }
             pthread_mutex_lock(&client->lock);
             client->total_bytes_down += len;
             pthread_mutex_unlock(&client->lock);
+
         }
+    }
+}
+
+void* monitor_clients(void* arg) {
+    while (1) {
+        for (size_t i = 0; i < MAX_CLIENTS; i ++) {
+            if (clients[i].is_active) {
+                pthread_mutex_lock(&clients[i].lock);
+
+                if (clients[i].total_bytes_up == 0 && clients[i].total_bytes_down == 0) {
+                    clients[i].is_active = 0;
+
+                    pthread_mutex_lock(&client_count_lock);
+                    connected_clients --;
+                    pthread_mutex_unlock(&client_count_lock);
+
+                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t UdpRunningtime:     %d", connected_clients, run_time);
+                    wrefresh(main_win);
+                }
+
+                clients[i].total_bytes_up = 0;
+                clients[i].total_bytes_down = 0;
+
+                pthread_mutex_unlock(&clients[i].lock);
+            }
+        }
+
+        sleep(1);
     }
 }
 
@@ -276,9 +317,15 @@ int main(int argc, char* argv[]) {
     timer.it_interval.tv_usec = 0;
     setitimer(ITIMER_REAL, &timer, NULL);
 
+    // 监听客户端是否活跃
+    pthread_t monitor_thread;
+    if (pthread_create(&monitor_thread, NULL, monitor_clients, NULL) != 0) {
+        perror("failed to create monitor_thread");
+        exit(EXIT_FAILURE);
+    }
+
     int server_fd;
     struct sockaddr_in server_addr;
-    // // TCP client 放到后面初始化
     // struct sockaddr_in server_addr, client_addr;
     // socklen_t client_addr_len = sizeof(client_addr);
     pthread_t threads[MAX_CLIENTS * 2];
@@ -363,7 +410,7 @@ int main(int argc, char* argv[]) {
                     connected_clients ++;
                     pthread_mutex_unlock(&client_count_lock);
                     // 更新界面
-                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Run       time:     %d", connected_clients, run_time);
+                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
                     wrefresh(main_win);
 
                     break;
@@ -407,6 +454,7 @@ int main(int argc, char* argv[]) {
     }
 
     close(server_fd);
+    pthread_join(monitor_thread, NULL);
     endwin();
     return 0;
 }

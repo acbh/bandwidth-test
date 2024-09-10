@@ -59,6 +59,7 @@ void* receive_data(void* arg) {
         while (1) {
             ssize_t n = recvfrom(info->sockfd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&(info->server_addr), &addr_len);
             if (n <= 0) {
+                perror("recvfrom failed");
                 break;
             }
             info->total_bytes_received += n;  // 累积下载的字节数
@@ -154,19 +155,37 @@ int main(int argc, char* argv[]) {
     gettimeofday(&transfer_info.start_time, NULL);
 
 
-    // UDP 模式下 客户端先发送启动信号
-    if (is_udp && (mode == 1 || mode == 2)) {
-        char init_msg[1] = {0};
+    // UDP 模式下down double 客户端先发送启动信号
+    if (is_udp) {
+        char init_msg[] = "INIT";
         sendto(sockfd, init_msg, sizeof(init_msg), 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
+
+        // 接收服务器的确认
+        char ack_buffer[BUFFER_SIZE];
+        socklen_t addr_len = sizeof(server_addr);
+        ssize_t ack_len = recvfrom(sockfd, ack_buffer, BUFFER_SIZE, 0, (struct sockaddr*)&server_addr, &addr_len);
+        if (ack_len <= 0 || strncmp(ack_buffer, "ACK", 3) != 0) {
+            perror("failed to reveive ACK from server");
+            close(sockfd);
+            exit(EXIT_FAILURE);
+        }
     }
     
     // 根据模式启动相应的线程
     if (mode == 0 || mode == 2) {  // 上传模式或双向模式，启动发送线程
-        pthread_create(&send_thread, NULL, send_data, &transfer_info);
+        if (pthread_create(&send_thread, NULL, send_data, &transfer_info) != 0) {
+            perror("failed to create send thread");
+            close(sockfd);
+            exit(EXIT_FAILURE);
+        }
     }
 
     if (mode == 1 || mode == 2) {  // 下载模式或双向模式，启动接收线程
-        pthread_create(&receive_thread, NULL, receive_data, &transfer_info);
+        if (pthread_create(&receive_thread, NULL, receive_data, &transfer_info) != 0) {
+            perror("failed to create send thread");
+            close(sockfd);
+            exit(EXIT_FAILURE);
+        }
     }
 
     // 等待用户按下回车键结束测试
