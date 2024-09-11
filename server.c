@@ -7,6 +7,9 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <ncurses.h>
+#include <netdb.h> // getaddrinfo, freeaddrinfo
+#include <sys/ioctl.h>
+#include <net/if.h>
 
 #define SERVER_PORT 5201
 #define BUFFER_SIZE 1470
@@ -47,6 +50,10 @@ void handle_alarm(int sig) {
     gettimeofday(&now, NULL);
     int rank = 1;  // 用于显示的排名
 
+    // 显示当前带宽限制
+    mvwprintw(main_win, 6, 1, "Current Bandwidth Limit: %.2f Mbps", bandwidth_limit_mbps);
+    wrefresh(main_win);
+
     // 遍历客户端信息数组
     for (size_t i = 0; i < MAX_CLIENTS; i++) {
         // if (clients[i].fd != 0) { // 确保该槽位已经分配了客户端
@@ -66,7 +73,7 @@ void handle_alarm(int sig) {
 
             // 显示客户端的上传和下载带宽
             if (clients[i].total_bytes_up > 0 || clients[i].total_bytes_down > 0) {
-                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s\t|  %d | %8.2f Mbps | %8.2f Mbps |",
+                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s |  %d | %8.2f Mbps | %8.2f Mbps |",
                     rank, clients[i].ip, clients[i].port, up_bandwidth_mbps, down_bandwidth_mbps);
                 rank++;
             }
@@ -86,9 +93,57 @@ void handle_alarm(int sig) {
 
     // 清除多余的行（如果有客户端断开，行数可能会减少）
     for (int j = rank; j <= MAX_CLIENTS; j++) {
-        mvwprintw(main_win, j + 10, 1, "|      | \t\t|        | \t\t | \t\t |"); // 清空行内容
+        mvwprintw(main_win, j + 10, 1, "|      | \t\t |        | \t\t  | \t\t  |"); // 清空行内容
     }
     wrefresh(main_win);
+}
+
+// 将输入的limit值发给客户端 
+void send_bandwidth_limit_to_clients(double new_limit) {
+    char limit_message[50];
+    snprintf(limit_message, sizeof(limit_message), "BANDWIDTH_LIMIT:%.2f", new_limit);
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (clients[i].is_active) {
+            if (is_tcp) {
+                send(clients[i].fd, limit_message, strlen(limit_message), 0);
+            } else {
+                sendto(clients[i].fd, limit_message, strlen(limit_message), 0, (struct sockaddr*)&clients[i].client_addr, sizeof(clients[i].client_addr));
+            }
+        }
+    }
+}
+
+void* listen_for_input(void* arg) {
+    char input[10];
+    while (1) {
+        mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps): ");
+        wrefresh(main_win);
+
+        echo();
+        wgetnstr(main_win, input, 8); // 字符串输入
+        noecho();
+
+        double new_limit = atof(input);
+
+        if (new_limit > 0) {
+            pthread_mutex_lock(&bandwidth_lock);
+            bandwidth_limit_mbps = new_limit;
+            pthread_mutex_unlock(&bandwidth_lock);
+
+            send_bandwidth_limit_to_clients(new_limit);
+
+            mvwprintw(main_win, 8, 1, "bandwidth limit updated to %.2f Mbps", bandwidth_limit_mbps);
+            wrefresh(main_win);
+        } else {
+            mvwprintw(main_win, 8, 1, "invalid input. please enter a positive number.");
+            wrefresh(main_win);
+        }
+
+        sleep(1);
+        mvwprintw(main_win, 8, 1, "                                                      ");
+        wrefresh(main_win);
+    }
 }
 
 // 处理TCP客户端上传数据
@@ -265,6 +320,79 @@ void* monitor_clients(void* arg) {
     }
 }
 
+// 获取指定网络接口 ip地址
+int get_interface_ip(const char *interface, char *ip_buffer, size_t buffer_size) {
+    int fd;
+    struct ifreq ifr;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        perror("socket failed");
+        return -1;
+    }
+
+    strncpy(ifr.ifr_name, interface, IFNAMSIZ - 1);
+
+    // 通过 ioctl 获取网络接口信息
+    if (ioctl(fd, SIOCGIFADDR, &ifr) < 0) {
+        perror("ioctl failed");
+        close(fd);
+        return -1;
+    }
+
+    // 获取IP地址
+    struct sockaddr_in* ipaddr = (struct sockaddr_in*)&ifr.ifr_addr;
+    inet_ntop(AF_INET, &ipaddr->sin_addr, ip_buffer, buffer_size);
+
+    close(fd);
+    return 0;
+}
+
+// 处理客户端广播请求 发送服务器IP地址
+void* handle_broadcast_requests(void* arg) {
+    int server_fd;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    char buffer[BUFFER_SIZE];
+    char server_ip[INET_ADDRSTRLEN];
+
+    if ((server_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("udp socket create failed");
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(5202);
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        perror("bind failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    // 获取 有线网络接口 ip地址
+    if (get_interface_ip("enp2s0", server_ip, sizeof(server_ip)) != 0) {
+        fprintf(stderr, "Failed to get IP address for enp2s0\n");
+        close(server_fd);
+        return NULL;
+    }
+
+    mvwprintw(main_win, 1, 1, "Server    IP:\t\t%s\t Server    Port:     %d", server_ip, SERVER_PORT);
+    wrefresh(main_win);
+
+    while (1) { // 接收客户端请求
+        ssize_t len = recvfrom(server_fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&client_addr, &addr_len);
+        if (len > 0) {
+            sendto(server_fd, server_ip, strlen(server_ip), 0, (struct sockaddr*)&client_addr, addr_len);
+        }
+    }
+
+    close(server_fd);
+    return NULL;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <tcp/udp> <up/down/double>\n", argv[0]);
@@ -294,18 +422,20 @@ int main(int argc, char* argv[]) {
     // 初始化ncurses
     initscr();
     cbreak();
-    noecho();
+    noecho(); // 不回显
     curs_set(0);
     main_win = newwin(MAX_CLIENTS * 2 + 4, 80, 0, 0);
     box(main_win, 0, 0);
     mvwprintw(main_win, 1, 1, "Server    IP:\t\t%s\t Server    Port:     %d", server_ip, SERVER_PORT);
-    mvwprintw(main_win, 2, 1, "Broadcast IP:\t\t%s\t Broadcast Port:     %d", server_ip, 5202);
+    mvwprintw(main_win, 2, 1, "Broadcast IP:\t\t%s\t Broadcast Port:     %d", "192.168.18.255", 5202);
     mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
     mvwprintw(main_win, 4, 1, "Current Mode: \t%s", mode == 0 ? "UP" : (mode == 1) ? "DOWN" : "DOUBLE");
-    mvwprintw(main_win, 5, 1, "Bandwidth Limit: %.2f Mbps", bandwidth_limit_mbps);
+    // mvwprintw(main_win, 5, 1, "Bandwidth Limit: %.2f Mbps", bandwidth_limit_mbps); // 在 listen_for_input 中实现
+
+    // 6 7 8 lines handle limit input
     
-    mvwprintw(main_win, 9, 1, "| RANK | IP\t\t|  PORT  | UP\t\t | DOWN\t\t |");
-    mvwprintw(main_win,10, 1, "----------------------------------------------------------------");
+    mvwprintw(main_win, 9, 1, "| RANK | IP\t\t |  PORT  | UP\t\t  | DOWN\t  |");
+    mvwprintw(main_win,10, 1, "-----------------------------------------------------------------");
     wrefresh(main_win);
 
     // 设置定时器，每秒触发一次
@@ -321,6 +451,20 @@ int main(int argc, char* argv[]) {
     pthread_t monitor_thread;
     if (pthread_create(&monitor_thread, NULL, monitor_clients, NULL) != 0) {
         perror("failed to create monitor_thread");
+        exit(EXIT_FAILURE);
+    }
+
+    // 监听处理广播请求
+    pthread_t broadcast_thread;
+    if (pthread_create(&broadcast_thread, NULL, handle_broadcast_requests, NULL) != 0) {
+        perror("failed to create broadcast_thread");
+        exit(EXIT_FAILURE);
+    }
+
+    // 监听带宽限制输入
+    pthread_t input_thread;
+    if (pthread_create(&input_thread, NULL, listen_for_input, NULL) != 0) {
+        perror("failed to create input thread");
         exit(EXIT_FAILURE);
     }
 
@@ -455,6 +599,7 @@ int main(int argc, char* argv[]) {
 
     close(server_fd);
     pthread_join(monitor_thread, NULL);
+    pthread_join(broadcast_thread, NULL);
     endwin();
     return 0;
 }

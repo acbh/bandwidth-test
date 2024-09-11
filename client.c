@@ -78,6 +78,42 @@ void* receive_data(void* arg) {
     return NULL;
 }
 
+void get_server_ip(char* server_ip) {
+    int client_fd;
+    struct sockaddr_in broadcast_addr;
+    socklen_t addr_len = sizeof(broadcast_addr);
+    char buffer[BUFFER_SIZE];
+
+    if ((client_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("udp socket create failed");
+        exit(EXIT_FAILURE);
+    }
+
+    int broadcast = 1;
+    if (setsockopt(client_fd, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) < 0) {
+        perror("setsockopt failed");
+        close(client_fd);
+        exit(EXIT_FAILURE);
+    }
+
+    memset(&broadcast_addr, 0, sizeof(broadcast_addr));
+    broadcast_addr.sin_family = AF_INET;
+    broadcast_addr.sin_port = htons(5202); // 服务端监听广播的端口
+    broadcast_addr.sin_addr.s_addr = inet_addr("192.168.18.255");
+
+    char message[] = "DISCOVER_SERVER";
+    sendto(client_fd, message, strlen(message), 0, (struct sockaddr*)&broadcast_addr, addr_len);
+
+    ssize_t len = recvfrom(client_fd, buffer, BUFFER_SIZE, 0, (struct sockaddr*)&broadcast_addr, &addr_len);
+    if (len > 0) {
+        buffer[len] = '\0';
+        strcpy(server_ip, buffer);
+        printf("server ip: %s\n", server_ip);
+    }
+
+    close(client_fd);
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <tcp/udp> <up/down/double>\n", argv[0]);
@@ -109,6 +145,9 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    char server_ip[INET_ADDRSTRLEN];
+    get_server_ip(server_ip);
+
     int sockfd;
     struct sockaddr_in server_addr;
     struct timeval end_time;
@@ -133,7 +172,7 @@ int main(int argc, char* argv[]) {
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
-    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server_addr.sin_addr.s_addr = inet_addr(server_ip);
 
     if (!is_udp) {
         // TCP连接
