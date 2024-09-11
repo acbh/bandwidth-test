@@ -17,13 +17,40 @@ typedef struct {
     struct timeval start_time;
     struct sockaddr_in server_addr;  // 仅用于UDP
     int is_udp;  // 标志当前是否使用UDP
+    double bandwidth_limit_mbps;
 } transfer_info_t;
+
+void* listen_for_bandwidth_limit(void* arg) {
+    transfer_info_t* info = (transfer_info_t*)arg;
+    char buffer[BUFFER_SIZE];
+    while (1) {
+        // 这里假设服务端发送的是 "BANDWIDTH_LIMIT:xxx" 格式的消息
+        ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0);
+        if (n > 0) {
+            buffer[n] = '\0';  // 添加字符串终止符
+            if (strncmp(buffer, "BANDWIDTH_LIMIT:", 16) == 0) {
+                // 提取限速值
+                double new_limit = atof(buffer + 16);
+                if (new_limit > 0) {
+                    info->bandwidth_limit_mbps = new_limit;
+                    printf("Received new bandwidth limit: %.2f Mbps\n", info->bandwidth_limit_mbps);
+                }
+            }
+        }
+    }
+    return NULL;
+}
 
 // 发送数据（上传）
 void* send_data(void* arg) {
     transfer_info_t* info = (transfer_info_t*)arg;
     char buffer[BUFFER_SIZE];
     memset(buffer, 'A', sizeof(buffer));  // 填充缓冲区数据
+
+    long bytes_sent_in_second = 0;
+    struct timeval start_time, end_time;
+
+    gettimeofday(&start_time, NULL);
 
     if (info->is_udp) {
         // UDP发送
@@ -33,6 +60,22 @@ void* send_data(void* arg) {
                 break;
             }
             info->total_bytes_sent += n;  // 累积上传的字节数
+            bytes_sent_in_second += n;
+
+            gettimeofday(&end_time, NULL);
+            double elapsed_time = (end_time.tv_sec - start_time.tv_sec) + ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
+            
+            double max_bytes_per_sec = (info->bandwidth_limit_mbps * 1e6) / 8;
+
+            // 如果本秒内发送的字节数超过限速 则休眠到1秒结束
+            if (elapsed_time < 1.0 && bytes_sent_in_second >= max_bytes_per_sec) {
+                usleep((1.0 - elapsed_time) * 1000000);
+                gettimeofday(&start_time, NULL);
+                bytes_sent_in_second = 0;
+            } else if (elapsed_time >= 0) {
+                gettimeofday(&start_time, NULL);
+                bytes_sent_in_second = 0;
+            }
         }
     } else {
         // TCP发送
@@ -41,7 +84,25 @@ void* send_data(void* arg) {
             if (n <= 0) {
                 break;
             }
+
             info->total_bytes_sent += n;  // 累积上传的字节数
+            bytes_sent_in_second += n;
+
+            gettimeofday(&end_time, NULL);
+            double elapsed_time = (end_time.tv_sec - start_time.tv_sec) + 
+                                  ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
+
+            // 限制上传带宽
+            double max_bytes_per_sec = (info->bandwidth_limit_mbps * 1e6) / 8;
+
+            if (elapsed_time < 1.0 && bytes_sent_in_second >= max_bytes_per_sec) {
+                usleep((1.0 - elapsed_time) * 1000000);
+                gettimeofday(&start_time, NULL);
+                bytes_sent_in_second = 0;
+            } else if (elapsed_time >= 1.0) {
+                gettimeofday(&start_time, NULL);
+                bytes_sent_in_second = 0;
+            }
         }
     }
 
@@ -54,6 +115,11 @@ void* receive_data(void* arg) {
     char buffer[BUFFER_SIZE];
     socklen_t addr_len = sizeof(info->server_addr);
 
+    long bytes_received_in_second = 0;
+    struct timeval start_time, end_time;
+
+    gettimeofday(&start_time, NULL);
+
     if (info->is_udp) {
         // UDP接收
         while (1) {
@@ -62,7 +128,23 @@ void* receive_data(void* arg) {
                 perror("recvfrom failed");
                 break;
             }
+
             info->total_bytes_received += n;  // 累积下载的字节数
+            bytes_received_in_second += n;
+
+            gettimeofday(&end_time, NULL);
+            double elapsed_time = (end_time.tv_sec - start_time.tv_sec) + 
+                                  ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
+
+            double max_bytes_per_sec = (info->bandwidth_limit_mbps * 1e6) / 8;
+            if (elapsed_time < 1.0 && bytes_received_in_second >= max_bytes_per_sec) {
+                usleep((1.0 - elapsed_time) * 1000000);
+                gettimeofday(&start_time, NULL);
+                bytes_received_in_second = 0;
+            } else if (elapsed_time >= 1.0) {
+                gettimeofday(&start_time, NULL);
+                bytes_received_in_second = 0;
+            }
         }
     } else {
         // TCP接收
@@ -71,7 +153,23 @@ void* receive_data(void* arg) {
             if (n <= 0) {
                 break;
             }
+
             info->total_bytes_received += n;  // 累积下载的字节数
+            bytes_received_in_second += n;
+
+            gettimeofday(&end_time, NULL);
+            double elapsed_time = (end_time.tv_sec - start_time.tv_sec) + 
+                                  ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
+
+            double max_bytes_per_sec = (info->bandwidth_limit_mbps * 1e6) / 8;
+            if (elapsed_time < 1.0 && bytes_received_in_second >= max_bytes_per_sec) {
+                usleep((1.0 - elapsed_time) * 1000000);
+                gettimeofday(&start_time, NULL);
+                bytes_received_in_second = 0;
+            } else if (elapsed_time >= 1.0) {
+                gettimeofday(&start_time, NULL);
+                bytes_received_in_second = 0;
+            }
         }
     }
 
@@ -151,7 +249,7 @@ int main(int argc, char* argv[]) {
     int sockfd;
     struct sockaddr_in server_addr;
     struct timeval end_time;
-    pthread_t send_thread, receive_thread;
+    pthread_t send_thread, receive_thread, bandwidth_thread;
 
     // 创建套接字
     if (is_udp) {
@@ -190,9 +288,16 @@ int main(int argc, char* argv[]) {
         .total_bytes_received = 0,
         .server_addr = server_addr,
         .is_udp = is_udp,
+        .bandwidth_limit_mbps = 10.0,
     };
     gettimeofday(&transfer_info.start_time, NULL);
 
+    // 启动监听带宽限制线程
+    if (pthread_create(&bandwidth_thread, NULL, listen_for_bandwidth_limit, &transfer_info) != 0) {
+        perror("failed to create bandwidth thread");
+        close(sockfd);
+        exit(EXIT_FAILURE);
+    }
 
     // UDP 模式下down double 客户端先发送启动信号
     if (is_udp) {
@@ -257,5 +362,7 @@ int main(int argc, char* argv[]) {
 
     // 关闭套接字
     close(sockfd);
+    pthread_cancel(bandwidth_thread);
+    pthread_join(bandwidth_thread, NULL);
     return 0;
 }
