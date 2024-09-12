@@ -24,7 +24,7 @@ void* listen_for_bandwidth_limit(void* arg) {
     transfer_info_t* info = (transfer_info_t*)arg;
     char buffer[BUFFER_SIZE];
     while (1) {
-        // 这里假设服务端发送的是 "BANDWIDTH_LIMIT:xxx" 格式的消息
+        // 服务端消息格式 "BANDWIDTH_LIMIT:xxx"
         ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0);
         if (n > 0) {
             buffer[n] = '\0';  // 添加字符串终止符
@@ -149,7 +149,7 @@ void* receive_data(void* arg) {
     } else {
         // TCP接收
         while (1) {
-            ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0);  // 接收数据
+            ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0); // 接收数据
             if (n <= 0) {
                 break;
             }
@@ -163,7 +163,7 @@ void* receive_data(void* arg) {
 
             double max_bytes_per_sec = (info->bandwidth_limit_mbps * 1e6) / 8;
             if (elapsed_time < 1.0 && bytes_received_in_second >= max_bytes_per_sec) {
-                usleep((1.0 - elapsed_time) * 1000000);
+                usleep((1.0 - elapsed_time) * 1000000); // 限速逻辑
                 gettimeofday(&start_time, NULL);
                 bytes_received_in_second = 0;
             } else if (elapsed_time >= 1.0) {
@@ -288,7 +288,7 @@ int main(int argc, char* argv[]) {
         .total_bytes_received = 0,
         .server_addr = server_addr,
         .is_udp = is_udp,
-        .bandwidth_limit_mbps = 10.0,
+        .bandwidth_limit_mbps = 1e6,
     };
     gettimeofday(&transfer_info.start_time, NULL);
 
