@@ -118,10 +118,14 @@ void send_bandwidth_limit_to_clients(double new_limit) {
 void* listen_for_input(void* arg) {
     char input[10];
     while (1) {
+<<<<<<< HEAD
         mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps):                   ");
         wrefresh(main_win);
 
         wmove(main_win, 7, 35);
+=======
+        mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps):            ");
+>>>>>>> 943dd3282cb5415c3ba139082824e01319a62e55
         wrefresh(main_win);
 
         echo();
