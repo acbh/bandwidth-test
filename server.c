@@ -45,6 +45,13 @@ pthread_mutex_t client_count_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mode_lock = PTHREAD_MUTEX_INITIALIZER;
 
 int is_input_active = 0;
+struct timeval server_start_time; // record the server start up time
+
+int calculate_run_time() {
+    struct timeval current_time;
+    gettimeofday(&current_time, NULL); // get the current time
+    return (current_time.tv_sec - server_start_time.tv_sec);
+}
 
 // 计算带宽并在ncurses窗口中显示
 void handle_alarm(int sig) {
@@ -54,8 +61,12 @@ void handle_alarm(int sig) {
     gettimeofday(&now, NULL);
     int rank = 1;  // 用于显示的排名
 
+    // calculate the running time
+    run_time = calculate_run_time();
+
     // 显示当前带宽限制
     mvwprintw(main_win, 6, 1, "Current Bandwidth Limit: %.2f Mbps            ", bandwidth_limit_mbps);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
     // mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps):            ");
     wrefresh(main_win);
 
@@ -439,8 +450,8 @@ void* handle_broadcast_requests(void* arg) {
         exit(EXIT_FAILURE);
     }
 
-    // 获取 有线网络接口 enp2s0 ip地址
-    if (get_interface_ip("enp2s0", server_ip, sizeof(server_ip)) != 0) {
+    // 获取 有线网络接口 enp2s0 ip地址 // ens33 is the cy'virtual machine wired interface
+    if (get_interface_ip("ens33", server_ip, sizeof(server_ip)) != 0) {
         fprintf(stderr, "Failed to get IP address for enp2s0\n");
         close(server_fd);
         return NULL;
@@ -504,6 +515,8 @@ int main(int argc, char* argv[]) {
     mvwprintw(main_win, 9, 1, "| RANK | IP\t\t |  PORT  | UP\t\t  | DOWN\t  |");
     mvwprintw(main_win,10, 1, " ----------------------------------------------------------------");
     wrefresh(main_win);
+
+    gettimeofday(&server_start_time, NULL);
 
     // 设置定时器，每秒触发一次
     struct itimerval timer;

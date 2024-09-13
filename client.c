@@ -260,7 +260,7 @@ void get_server_ip(char* server_ip) {
     memset(&broadcast_addr, 0, sizeof(broadcast_addr));
     broadcast_addr.sin_family = AF_INET;
     broadcast_addr.sin_port = htons(5202); // 服务端监听广播的端口
-    broadcast_addr.sin_addr.s_addr = inet_addr("192.168.18.255");
+    broadcast_addr.sin_addr.s_addr = inet_addr("192.168.92.255");
 
     char message[] = "DISCOVER_SERVER";
     sendto(client_fd, message, strlen(message), 0, (struct sockaddr*)&broadcast_addr, addr_len);
