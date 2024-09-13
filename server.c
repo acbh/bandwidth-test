@@ -33,7 +33,7 @@ typedef struct {
 
 client_info_t clients[MAX_CLIENTS];
 int is_tcp = 1; // 默认TCP
-char server_ip[INET_ADDRSTRLEN] = "127.0.0.1";
+char server_ip[INET_ADDRSTRLEN];
 // int current_mode = 0;
 double bandwidth_limit_mbps = 1e9; // 1Gbps
 pthread_mutex_t bandwidth_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -97,6 +97,10 @@ void handle_alarm(int sig) {
         mvwprintw(main_win, j + 10, 1, "|      | \t\t |        | \t\t  | \t\t  |"); // 清空行内容
     }
     wrefresh(main_win);
+
+    // 恢复光标位置
+    wmove(main_win, 7, 35);  // 恢复光标位置
+    wrefresh(main_win);
 }
 
 // 将输入的limit值发给客户端
@@ -114,11 +118,14 @@ void send_bandwidth_limit_to_clients(double new_limit) {
 void* listen_for_input(void* arg) {
     char input[10];
     while (1) {
-        mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps):            ");
+        mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps):                   ");
+        wrefresh(main_win);
+
+        wmove(main_win, 7, 35);
         wrefresh(main_win);
 
         echo();
-        wgetnstr(main_win, input, 8); // 字符串输入
+        wgetnstr(main_win, input, 9); // 字符串输入
         noecho();
 
         double new_limit = atof(input);
