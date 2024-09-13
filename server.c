@@ -10,6 +10,7 @@
 #include <netdb.h> // getaddrinfo, freeaddrinfo
 #include <sys/ioctl.h>
 #include <net/if.h>
+#include <ctype.h>
 
 #define SERVER_PORT 5201
 #define BUFFER_SIZE 1470
@@ -36,11 +37,14 @@ int is_tcp = 1; // 默认TCP
 char server_ip[INET_ADDRSTRLEN];
 // int current_mode = 0;
 double bandwidth_limit_mbps = 1e9; // 1Gbps
-pthread_mutex_t bandwidth_lock = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t client_count_lock = PTHREAD_MUTEX_INITIALIZER;
 int connected_clients = 0;
 int run_time = 0;
 int mode = 0; // 0 UP 1 DOWN 3 DOUBLE
+pthread_mutex_t bandwidth_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t client_count_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t mode_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int is_input_active = 0;
 
 // 计算带宽并在ncurses窗口中显示
 void handle_alarm(int sig) {
@@ -115,41 +119,72 @@ void send_bandwidth_limit_to_clients(double new_limit) {
     }
 }
 
-void* listen_for_input(void* arg) {
-    char input[10];
+// 监听输入函数，处理模式切换和限速设置
+void* input_listener(void* arg) {
+    char input_buffer[10] = {0};  // 用于保存限速输入
+    int input_index = 0;  // 当前输入索引
+    int ch;
+
+    nodelay(main_win, TRUE);  // 设置窗口为非阻塞模式
+
     while (1) {
-        mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps):                   ");
-        wrefresh(main_win);
-
-        wmove(main_win, 7, 35);
-
-        wrefresh(main_win);
-
-        echo();
-        wgetnstr(main_win, input, 9); // 字符串输入
-        noecho();
-
-        double new_limit = atof(input);
-
-        if (new_limit > 0) {
-            pthread_mutex_lock(&bandwidth_lock);
-            bandwidth_limit_mbps = new_limit;
-            pthread_mutex_unlock(&bandwidth_lock);
-
-            send_bandwidth_limit_to_clients(new_limit);
-
-            mvwprintw(main_win, 8, 1, "bandwidth limit updated to %.2f Mbps", bandwidth_limit_mbps);
-            wrefresh(main_win);
-        } else {
-            mvwprintw(main_win, 8, 1, "invalid input. please enter a positive number.");
-            wrefresh(main_win);
+        ch = wgetch(main_win);  // 监听按键输入
+        if (ch == ERR) {
+            usleep(100000);  // 如果没有按键输入，等待100ms
+            continue;
         }
 
-        sleep(1);
-        mvwprintw(main_win, 8, 1, "                                                      ");
-        wrefresh(main_win);
+        if (isdigit(ch)) {  // 如果输入的是数字，则处理限速
+            if (input_index < sizeof(input_buffer) - 1) {
+                input_buffer[input_index++] = ch;
+                mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps): %s    ", input_buffer);
+                wrefresh(main_win);
+            }
+        } else if (ch == '\n') {  // 如果按下了回车键，处理限速值
+            if (input_index > 0) {
+                input_buffer[input_index] = '\0';
+                double new_limit = atof(input_buffer);
+
+                if (new_limit > 0) {
+                    pthread_mutex_lock(&bandwidth_lock);
+                    bandwidth_limit_mbps = new_limit;
+                    pthread_mutex_unlock(&bandwidth_lock);
+
+                    send_bandwidth_limit_to_clients(new_limit);
+
+                    // 显示更新信息并保持1秒
+                    mvwprintw(main_win, 8, 1, "bandwidth limit updated to %.2f Mbps", bandwidth_limit_mbps);
+                    wrefresh(main_win);
+                    sleep(1);  // 暂停1秒
+                    mvwprintw(main_win, 8, 1, "                                        ");  // 清空该行
+                    wrefresh(main_win);
+                } else {
+                    mvwprintw(main_win, 8, 1, "invalid input. please enter a positive number.");
+                    wrefresh(main_win);
+                    sleep(1);  // 暂停1秒
+                    mvwprintw(main_win, 8, 1, "                                        ");  // 清空该行
+                    wrefresh(main_win);
+                }
+
+                memset(input_buffer, 0, sizeof(input_buffer));  // 重置输入缓冲区
+                input_index = 0;  // 重置索引
+            }
+        } else if (ch == 'u' || ch == 'd' || ch == 'p') {  // 如果输入的是模式切换字母
+            pthread_mutex_lock(&mode_lock);
+            if (ch == 'u') {
+                mode = 0;  // 切换到上传模式
+            } else if (ch == 'd') {
+                mode = 1;  // 切换到下载模式
+            } else if (ch == 'p') {
+                mode = 2;  // 切换到双向模式
+            }
+            mvwprintw(main_win, 4, 1, "Current Mode: \t%s    ", mode == 0 ? "UP" : (mode == 1) ? "DOWN" : "DOUBLE");
+            wrefresh(main_win);
+            pthread_mutex_unlock(&mode_lock);
+        }
     }
 }
+
 
 // 处理TCP客户端上传数据
 void* handle_tcp_client_upload(void* arg) {
@@ -489,10 +524,10 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    // 监听带宽限制输入
+    // 启动模式切换监听线程
     pthread_t input_thread;
-    if (pthread_create(&input_thread, NULL, listen_for_input, NULL) != 0) {
-        perror("failed to create input thread");
+    if (pthread_create(&input_thread, NULL, input_listener, NULL) != 0) {
+        perror("failed to create input_thread");
         exit(EXIT_FAILURE);
     }
 
