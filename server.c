@@ -107,12 +107,12 @@ void handle_alarm(int sig) {
     wrefresh(main_win);
 }
 
-// 将输入的limit值发给客户端
-void send_bandwidth_limit_to_clients(double new_limit) {
+// 将输入的limit值 mode 发给客户端
+void send_bandwidth_limit_to_clients(double new_limit, int new_mode) {
     char limit_message[50];
-    snprintf(limit_message, sizeof(limit_message), "BANDWIDTH_LIMIT:%.2f", new_limit);
+    snprintf(limit_message, sizeof(limit_message), "BANDWIDTH_LIMIT:%.2f MODE:%d", new_limit, new_mode);
 
-    for (int i = 0; i < MAX_CLIENTS; i++) { // 将 limit 发给所有活跃的客户端
+    for (int i = 0; i < MAX_CLIENTS; i++) { // 将 limit mode 发给所有活跃的客户端
         if (clients[i].is_active) {
             send(clients[i].fd, limit_message, strlen(limit_message), 0); // 无论是 UDP 还是 TCP 传输数据，都用 TCP 发送控制信息
         }
@@ -150,7 +150,7 @@ void* input_listener(void* arg) {
                     bandwidth_limit_mbps = new_limit;
                     pthread_mutex_unlock(&bandwidth_lock);
 
-                    send_bandwidth_limit_to_clients(new_limit);
+                    send_bandwidth_limit_to_clients(new_limit, mode);
 
                     // 显示更新信息并保持1秒
                     mvwprintw(main_win, 8, 1, "bandwidth limit updated to %.2f Mbps", bandwidth_limit_mbps);
@@ -180,6 +180,10 @@ void* input_listener(void* arg) {
             }
             mvwprintw(main_win, 4, 1, "Current Mode: \t%s    ", mode == 0 ? "UP" : (mode == 1) ? "DOWN" : "DOUBLE");
             wrefresh(main_win);
+
+            // 通知所有客户端 模式已更改
+            send_bandwidth_limit_to_clients(bandwidth_limit_mbps, mode);
+
             pthread_mutex_unlock(&mode_lock);
         }
     }
@@ -435,7 +439,7 @@ void* handle_broadcast_requests(void* arg) {
         exit(EXIT_FAILURE);
     }
 
-    // 获取 有线网络接口 ip地址
+    // 获取 有线网络接口 enp2s0 ip地址
     if (get_interface_ip("enp2s0", server_ip, sizeof(server_ip)) != 0) {
         fprintf(stderr, "Failed to get IP address for enp2s0\n");
         close(server_fd);

@@ -18,28 +18,18 @@ typedef struct {
     struct sockaddr_in server_addr;  // 仅用于UDP
     int is_udp;  // 标志当前是否使用UDP
     double bandwidth_limit_mbps;
+    pthread_mutex_t lock;
 } transfer_info_t;
 
-void* listen_for_bandwidth_limit(void* arg) {
-    transfer_info_t* info = (transfer_info_t*)arg;
-    char buffer[BUFFER_SIZE];
-    while (1) {
-        // 服务端消息格式 "BANDWIDTH_LIMIT:xxx"
-        ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0);
-        if (n > 0) {
-            buffer[n] = '\0';  // 添加字符串终止符
-            if (strncmp(buffer, "BANDWIDTH_LIMIT:", 16) == 0) {
-                // 提取限速值
-                double new_limit = atof(buffer + 16);
-                if (new_limit > 0) {
-                    info->bandwidth_limit_mbps = new_limit;
-                    printf("Received new bandwidth limit: %.2f Mbps\n", info->bandwidth_limit_mbps);
-                }
-            }
-        }
-    }
-    return NULL;
-}
+// 全局变量，用于指示当前正在运行的发送和接收线程
+pthread_t send_thread, receive_thread;
+int send_thread_active = 0;
+int receive_thread_active = 0;
+
+int mode = 0; // 0: UP, 1: DOWN, 2: DOUBLE
+int is_udp = 0;  // 默认TCP
+pthread_mutex_t mode_lock = PTHREAD_MUTEX_INITIALIZER;
+
 
 // 发送数据（上传）
 void* send_data(void* arg) {
@@ -176,6 +166,79 @@ void* receive_data(void* arg) {
     return NULL;
 }
 
+// 客户端接收mode和limit的处理函数
+void* client_mode_listener(void* arg) {
+    transfer_info_t* info = (transfer_info_t*)arg;
+    char buffer[BUFFER_SIZE];
+
+    while (1) {
+        ssize_t len = recv(info->sockfd, buffer, sizeof(buffer) - 1, 0);
+        if (len > 0) {
+            buffer[len] = '\0';
+            int mode_char;
+            double limit;    //"BANDWIDTH_LIMIT:%.2f MODE:%d"
+            if (sscanf(buffer, "BANDWIDTH_LIMIT:%lf MODE:%d", &limit, &mode_char) == 2) {
+                
+                printf("Received new mode: %d and bandwidth limit: %.2f Mbps\n", mode_char, limit);
+
+                // 更新带宽限制
+                pthread_mutex_lock(&info->lock);
+                info->bandwidth_limit_mbps = limit;
+                pthread_mutex_unlock(&info->lock);
+
+                // 动态调整上传/下载逻辑
+                pthread_mutex_lock(&mode_lock);  // 获取锁
+                mode = mode_char;  // 更新全局变量
+                pthread_mutex_unlock(&mode_lock);  // 释放锁
+
+                if (mode == 0) {  // 仅上传
+                    printf("Switch to UP mode\n");
+                    if (!send_thread_active) {
+                        // 启动发送线程
+                        if (pthread_create(&send_thread, NULL, send_data, info) == 0) {
+                            send_thread_active = 1;
+                        }
+                    }
+                    // 停止接收线程
+                    if (receive_thread_active) {
+                        pthread_cancel(receive_thread);
+                        pthread_join(receive_thread, NULL);
+                        receive_thread_active = 0;
+                    }
+                } else if (mode == 1) {  // 仅下载
+                    printf("Switch to DOWN mode\n");
+                    if (!receive_thread_active) {
+                        // 启动接收线程
+                        if (pthread_create(&receive_thread, NULL, receive_data, info) == 0) {
+                            receive_thread_active = 1;
+                        }
+                    }
+                    // 停止发送线程
+                    if (send_thread_active) {
+                        pthread_cancel(send_thread);
+                        pthread_join(send_thread, NULL);
+                        send_thread_active = 0;
+                    }
+                } else if (mode == 2) {  // 双向模式
+                    printf("Switch to DOUBLE mode\n");
+                    // 启动发送线程
+                    if (!send_thread_active) {
+                        if (pthread_create(&send_thread, NULL, send_data, info) == 0) {
+                            send_thread_active = 1;
+                        }
+                    }
+                    // 启动接收线程
+                    if (!receive_thread_active) {
+                        if (pthread_create(&receive_thread, NULL, receive_data, info) == 0) {
+                            receive_thread_active = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 void get_server_ip(char* server_ip) {
     int client_fd;
     struct sockaddr_in broadcast_addr;
@@ -218,9 +281,6 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    int mode = 0; // 0: UP, 1: DOWN, 2: DOUBLE
-    int is_udp = 0;  // 默认TCP
-
     // 解析协议类型
     if (strcmp(argv[1], "tcp") == 0) {
         is_udp = 0;  // TCP
@@ -249,7 +309,7 @@ int main(int argc, char* argv[]) {
     int sockfd;
     struct sockaddr_in server_addr;
     struct timeval end_time;
-    pthread_t send_thread, receive_thread, bandwidth_thread;
+    pthread_t bandwidth_thread;
 
     // 创建套接字
     if (is_udp) {
@@ -292,8 +352,8 @@ int main(int argc, char* argv[]) {
     };
     gettimeofday(&transfer_info.start_time, NULL);
 
-    // 启动监听带宽限制线程
-    if (pthread_create(&bandwidth_thread, NULL, listen_for_bandwidth_limit, &transfer_info) != 0) {
+    // 启动监听limit mode线程
+    if (pthread_create(&bandwidth_thread, NULL, client_mode_listener, &transfer_info) != 0) {
         perror("failed to create bandwidth thread");
         close(sockfd);
         exit(EXIT_FAILURE);
@@ -315,21 +375,23 @@ int main(int argc, char* argv[]) {
         }
     }
     
-    // 根据模式启动相应的线程
-    if (mode == 0 || mode == 2) {  // 上传模式或双向模式，启动发送线程
+    // 根据初始模式启动相应的线程
+    if (mode == 0 || mode == 2) {  // 上传模式或双向模式
         if (pthread_create(&send_thread, NULL, send_data, &transfer_info) != 0) {
             perror("failed to create send thread");
             close(sockfd);
             exit(EXIT_FAILURE);
         }
+        send_thread_active = 1;
     }
 
-    if (mode == 1 || mode == 2) {  // 下载模式或双向模式，启动接收线程
+    if (mode == 1 || mode == 2) {  // 下载模式或双向模式
         if (pthread_create(&receive_thread, NULL, receive_data, &transfer_info) != 0) {
-            perror("failed to create send thread");
+            perror("failed to create receive thread");
             close(sockfd);
             exit(EXIT_FAILURE);
         }
+        receive_thread_active = 1;
     }
 
     // 等待用户按下回车键结束测试
