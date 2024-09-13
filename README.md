@@ -13,3 +13,4 @@ gcc client.c -o client -lpthread
 ./server tcp double
 ./client tcp double
 ```
+#### press keyboard u/d/p to toggle up/down/double mode test
