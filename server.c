@@ -36,10 +36,10 @@ client_info_t clients[MAX_CLIENTS];
 int is_tcp = 1; // 默认TCP
 char server_ip[INET_ADDRSTRLEN];
 // int current_mode = 0;
-double bandwidth_limit_mbps = 1e9; // 1Gbps
+double bandwidth_limit_mbps = 1000000; // 100Gbps
 int connected_clients = 0;
 int run_time = 0;
-int mode = 0; // 0 UP 1 DOWN 3 DOUBLE
+int mode = 2; // 0 UP 1 DOWN 2 DOUBLE
 pthread_mutex_t bandwidth_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t client_count_lock = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t mode_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -56,6 +56,7 @@ int calculate_run_time() {
 // 计算带宽并在ncurses窗口中显示
 void handle_alarm(int sig) {
     double up_bandwidth_mbps, down_bandwidth_mbps;
+    
     struct timeval now, elapsed;
 
     gettimeofday(&now, NULL);
@@ -66,7 +67,7 @@ void handle_alarm(int sig) {
 
     // 显示当前带宽限制
     mvwprintw(main_win, 6, 1, "Current Bandwidth Limit: %.2f Mbps            ", bandwidth_limit_mbps);
-    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d   ", connected_clients, run_time);
     // mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps):            ");
     wrefresh(main_win);
 
@@ -207,11 +208,34 @@ void* handle_tcp_client_upload(void* arg) {
     char buffer[BUFFER_SIZE];
     ssize_t len;
 
+    long bytes_received_in_second = 0;
+    struct timeval start_time, end_time;
+
+    gettimeofday(&start_time, NULL);
+
     // TCP 模式上传处理
     while ((len = recv(client->fd, buffer, BUFFER_SIZE, 0)) > 0) {
         pthread_mutex_lock(&client->lock);
         client->total_bytes_up += len;  // 记录上传的字节数
+        bytes_received_in_second += len;
         pthread_mutex_unlock(&client->lock);
+    }
+
+    gettimeofday(&end_time, NULL);
+    double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
+                              ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
+
+    // 根据设定的up带宽限制，计算每秒最多可以recv多少字节
+    double max_bytes_per_sec = (bandwidth_limit_mbps * 1e6) / 8;
+
+    // 如果本秒内recv的字节数超过限速，暂停recv数据
+    if (elapsed_time < 1.0 && bytes_received_in_second >= max_bytes_per_sec) {
+        usleep((1.0 - elapsed_time) * 1000000);  // 暂停，直到1秒钟结束
+        gettimeofday(&start_time, NULL);  // 重置时间
+        bytes_received_in_second = 0;  // 重置每秒recv字节数
+    } else if (elapsed_time >= 1.0) {
+        gettimeofday(&start_time, NULL);  // 如果超过1秒，重置时间
+        bytes_received_in_second = 0;  // 重置每秒recv字节数
     }
 
     close(client->fd);
@@ -604,7 +628,7 @@ int main(int argc, char* argv[]) {
                 endwin();
                 exit(EXIT_FAILURE);
             }
-            // TCP模式下接收客户端请求
+            // TCP模式下接收客户端请求 wait client connect
             *client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_addr_len);
             if (*client_fd < 0) {
                 perror("accept failed");

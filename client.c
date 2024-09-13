@@ -26,10 +26,13 @@ pthread_t send_thread, receive_thread;
 int send_thread_active = 0;
 int receive_thread_active = 0;
 
-int mode = 0; // 0: UP, 1: DOWN, 2: DOUBLE
+int mode = 2; // 0: UP, 1: DOWN, 2: DOUBLE
 int is_udp = 0;  // 默认TCP
 pthread_mutex_t mode_lock = PTHREAD_MUTEX_INITIALIZER;
 
+// add mark value
+int stop_send_thread = 0;
+int stop_receive_thread = 0;
 
 // 发送数据（上传）
 void* send_data(void* arg) {
@@ -69,7 +72,7 @@ void* send_data(void* arg) {
         }
     } else {
         // TCP发送
-        while (1) {
+        while (!stop_send_thread) {
             ssize_t n = send(info->sockfd, buffer, BUFFER_SIZE, 0);  // 发送数据
             if (n <= 0) {
                 break;
@@ -138,7 +141,7 @@ void* receive_data(void* arg) {
         }
     } else {
         // TCP接收
-        while (1) {
+        while (!stop_receive_thread) {
             ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0); // 接收数据
             if (n <= 0) {
                 break;
@@ -191,49 +194,55 @@ void* client_mode_listener(void* arg) {
                 mode = mode_char;  // 更新全局变量
                 pthread_mutex_unlock(&mode_lock);  // 释放锁
 
-                if (mode == 0) {  // 仅上传
+                // 先停止现有的线程
+                // 在client_mode_listener函数中
+                stop_send_thread = 1;
+                stop_receive_thread = 1;
+
+                if (send_thread_active) {
+                    pthread_join(send_thread, NULL);
+                    send_thread_active = 0;
+                }
+                if (receive_thread_active) {
+                    pthread_join(receive_thread, NULL);
+                    receive_thread_active = 0;
+                }
+
+                // 停止标志位重置
+                stop_send_thread = 0;
+                stop_receive_thread = 0;
+
+                // 重新启动线程
+                if (mode == 0) {  // 仅上传模式
                     printf("Switch to UP mode\n");
                     if (!send_thread_active) {
-                        // 启动发送线程
                         if (pthread_create(&send_thread, NULL, send_data, info) == 0) {
                             send_thread_active = 1;
                         }
                     }
-                    // 停止接收线程
-                    if (receive_thread_active) {
-                        pthread_cancel(receive_thread);
-                        pthread_join(receive_thread, NULL);
-                        receive_thread_active = 0;
-                    }
-                } else if (mode == 1) {  // 仅下载
+                    info->total_bytes_received = 0; // 清零下载字节数
+                } else if (mode == 1) {  // 仅下载模式
                     printf("Switch to DOWN mode\n");
                     if (!receive_thread_active) {
-                        // 启动接收线程
                         if (pthread_create(&receive_thread, NULL, receive_data, info) == 0) {
                             receive_thread_active = 1;
                         }
                     }
-                    // 停止发送线程
-                    if (send_thread_active) {
-                        pthread_cancel(send_thread);
-                        pthread_join(send_thread, NULL);
-                        send_thread_active = 0;
-                    }
+                    info->total_bytes_sent = 0; // 清零上传字节数
                 } else if (mode == 2) {  // 双向模式
                     printf("Switch to DOUBLE mode\n");
-                    // 启动发送线程
                     if (!send_thread_active) {
                         if (pthread_create(&send_thread, NULL, send_data, info) == 0) {
                             send_thread_active = 1;
                         }
                     }
-                    // 启动接收线程
                     if (!receive_thread_active) {
                         if (pthread_create(&receive_thread, NULL, receive_data, info) == 0) {
                             receive_thread_active = 1;
                         }
                     }
                 }
+
             }
         }
     }
