@@ -396,6 +396,9 @@ void* handle_udp_clients(void* arg) {
 
 void* monitor_clients(void* arg) {
     while (1) {
+
+        struct timeval now, elapsed;
+        
         for (size_t i = 0; i < MAX_CLIENTS; i ++) {
             if (clients[i].is_active) {
                 pthread_mutex_lock(&clients[i].lock);
@@ -409,6 +412,26 @@ void* monitor_clients(void* arg) {
 
                     mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
                     wrefresh(main_win);
+                }
+
+                timersub(&now, &clients[i].last_active_time, &elapsed);
+                double inactive_time = elapsed.tv_sec + elapsed.tv_usec / 1e6;
+
+                if (inactive_time > 10.0) {  // 超过10秒未活跃
+                    // 关闭连接
+                    if (is_tcp) {
+                        close(clients[i].fd);
+                    }
+                    clients[i].is_active = 0;
+
+                    pthread_mutex_lock(&client_count_lock);
+                    connected_clients--;
+                    pthread_mutex_unlock(&client_count_lock);
+
+                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+                    wrefresh(main_win);
+
+                    printf("Client %s:%d timed out and disconnected.\n", clients[i].ip, clients[i].port);
                 }
 
                 clients[i].total_bytes_up = 0;
@@ -670,26 +693,24 @@ int main(int argc, char* argv[]) {
             if (client != NULL) {
                 // 根据选择的模式，创建相应的线程
                 if (mode == 0 || mode == 2) {  // UP 模式或 DOUBLE 模式都启动上传线程
-                    if (pthread_create(&threads[thread_count++], NULL, handle_tcp_client_upload, client) != 0) {
+                    if (pthread_create(&threads[thread_count], NULL, handle_tcp_client_upload, client) != 0) {
                         perror("pthread_create for upload failed");
+                    } else {
+                        pthread_detach(threads[thread_count]);  // 自动回收线程资源
+                        thread_count++;
                     }
                 }
 
                 if (mode == 1 || mode == 2) {  // DOWN 模式或 DOUBLE 模式都启动下载线程
-                    if (pthread_create(&threads[thread_count++], NULL, handle_tcp_client_download, client) != 0) {
+                    if (pthread_create(&threads[thread_count], NULL, handle_tcp_client_download, client) != 0) {
                         perror("pthread_create for download failed");
-                    }
-                }
-
-                // 防止线程数量超过上限
-                if (thread_count >= MAX_CLIENTS * 2) {
-                    thread_count = 0;
-                    for (int i = 0; i < MAX_CLIENTS * 2; i++) {
-                        pthread_join(threads[i], NULL);
+                    } else {
+                        pthread_detach(threads[thread_count]);  // 自动回收线程资源
+                        thread_count++;
                     }
                 }
             } else {
-                printf("Max clients reached. Connection refused.\n");
+                printf("TCP Max clients reached. Connection refused.\n");
             }
         }
     } else {

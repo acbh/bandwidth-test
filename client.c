@@ -5,6 +5,8 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <sys/time.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #define SERVER_PORT 5201
 #define BUFFER_SIZE 1470
@@ -71,29 +73,44 @@ void* send_data(void* arg) {
             }
         }
     } else {
-        // TCP发送
+        // 在send_data和receive_data函数中，使用更精确的时间控制
+        struct timespec ts_start, ts_current;
+        clock_gettime(CLOCK_MONOTONIC, &ts_start);
+
         while (!stop_send_thread) {
-            ssize_t n = send(info->sockfd, buffer, BUFFER_SIZE, 0);  // 发送数据
+            ssize_t n = send(info->sockfd, buffer, BUFFER_SIZE, 0);
             if (n <= 0) {
-                break;
+                if (n < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        usleep(1000);
+                        continue;
+                    } else {
+                        perror("send failed"); // Resource temporarily unavailable
+                        break;
+                    }
+                }
             }
 
-            info->total_bytes_sent += n;  // 累积上传的字节数
+            pthread_mutex_lock(&info->lock);
+            info->total_bytes_sent += n;
             bytes_sent_in_second += n;
+            pthread_mutex_unlock(&info->lock);
 
-            gettimeofday(&end_time, NULL);
-            double elapsed_time = (end_time.tv_sec - start_time.tv_sec) + 
-                                  ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
+            clock_gettime(CLOCK_MONOTONIC, &ts_current);
+            double elapsed_time = (ts_current.tv_sec - ts_start.tv_sec) +
+                                  (ts_current.tv_nsec - ts_start.tv_nsec) / 1e9;
 
-            // 限制上传带宽
             double max_bytes_per_sec = (info->bandwidth_limit_mbps * 1e6) / 8;
 
-            if (elapsed_time < 1.0 && bytes_sent_in_second >= max_bytes_per_sec) {
-                usleep((1.0 - elapsed_time) * 1000000);
-                gettimeofday(&start_time, NULL);
+            if (elapsed_time >= 1.0) {
+                clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 bytes_sent_in_second = 0;
-            } else if (elapsed_time >= 1.0) {
-                gettimeofday(&start_time, NULL);
+            } else if (bytes_sent_in_second >= max_bytes_per_sec) {
+                double sleep_time = 1.0 - elapsed_time;
+                if (sleep_time > 0) {
+                    usleep(sleep_time * 1e6);
+                }
+                clock_gettime(CLOCK_MONOTONIC, &ts_start);
                 bytes_sent_in_second = 0;
             }
         }
@@ -101,6 +118,7 @@ void* send_data(void* arg) {
 
     return NULL;
 }
+
 
 // 接收数据（下载）
 void* receive_data(void* arg) {
@@ -144,6 +162,11 @@ void* receive_data(void* arg) {
         while (!stop_receive_thread) {
             ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0); // 接收数据
             if (n <= 0) {
+                if (n < 0) {
+                    perror("recv failed");
+                } else {
+                    printf("Server closed the connection.\n");
+                }
                 break;
             }
 
@@ -174,8 +197,20 @@ void* client_mode_listener(void* arg) {
     transfer_info_t* info = (transfer_info_t*)arg;
     char buffer[BUFFER_SIZE];
 
+    // 设置套接字为非阻塞模式，只需要设置一次
+    int flags = fcntl(info->sockfd, F_GETFL, 0);
+    if (flags == -1) {
+        perror("fcntl F_GETFL failed");
+        return NULL;
+    }
+    if (fcntl(info->sockfd, F_SETFL, flags | O_NONBLOCK) == -1) {
+        perror("fcntl F_SETFL failed");
+        return NULL;
+    }
+
     while (1) {
         ssize_t len = recv(info->sockfd, buffer, sizeof(buffer) - 1, 0);
+
         if (len > 0) {
             buffer[len] = '\0';
             int mode_char;
@@ -195,7 +230,6 @@ void* client_mode_listener(void* arg) {
                 pthread_mutex_unlock(&mode_lock);  // 释放锁
 
                 // 先停止现有的线程
-                // 在client_mode_listener函数中
                 stop_send_thread = 1;
                 stop_receive_thread = 1;
 
@@ -245,7 +279,23 @@ void* client_mode_listener(void* arg) {
 
             }
         }
+        else if (len == 0) {
+            printf("Connection closed by server.\n");
+            break;
+        }
+        else {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                perror("recv failed");
+                break;
+            }
+        }
+
+        usleep(100000);  // 睡眠 100 毫秒，防止过度占用 CPU
     }
+
+    // 如果循环退出，终止程序或重新连接
+    // 这里简单退出
+    exit(EXIT_FAILURE);
 }
 
 void get_server_ip(char* server_ip) {
@@ -351,14 +401,15 @@ int main(int argc, char* argv[]) {
     }
 
     // 初始化传输信息
-    transfer_info_t transfer_info = {
-        .sockfd = sockfd,
-        .total_bytes_sent = 0,
-        .total_bytes_received = 0,
-        .server_addr = server_addr,
-        .is_udp = is_udp,
-        .bandwidth_limit_mbps = 1e6,
-    };
+    transfer_info_t transfer_info;
+    transfer_info.sockfd = sockfd;
+    transfer_info.total_bytes_sent = 0;
+    transfer_info.total_bytes_received = 0;
+    transfer_info.server_addr = server_addr;
+    transfer_info.is_udp = is_udp;
+    transfer_info.bandwidth_limit_mbps = 1e6;
+    pthread_mutex_init(&transfer_info.lock, NULL);
+
     gettimeofday(&transfer_info.start_time, NULL);
 
     // 启动监听limit mode线程
