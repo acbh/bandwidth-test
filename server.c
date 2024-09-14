@@ -475,7 +475,7 @@ void* handle_broadcast_requests(void* arg) {
     }
 
     // 获取 有线网络接口 enp2s0 ip地址 // ens33 is the cy'virtual machine wired interface
-    if (get_interface_ip("ens33", server_ip, sizeof(server_ip)) != 0) {
+    if (get_interface_ip("enp2s0", server_ip, sizeof(server_ip)) != 0) {
         fprintf(stderr, "Failed to get IP address for enp2s0\n");
         close(server_fd);
         return NULL;
