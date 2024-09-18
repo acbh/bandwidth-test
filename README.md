@@ -14,3 +14,4 @@ gcc client.c -o client -lpthread
 ./client tcp double
 ```
 #### press keyboard u/d/p to toggle up/down/double mode test
+#### enter a number to add the speed limit
