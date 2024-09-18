@@ -89,11 +89,22 @@ void handle_alarm(int sig) {
             }
 
             // 显示客户端的上传和下载带宽
-            if (clients[i].total_bytes_up > 0 || clients[i].total_bytes_down > 0) {
-                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s |  %d | %8.2f Mbps | %8.2f Mbps |",
-                    rank, clients[i].ip, clients[i].port, up_bandwidth_mbps, down_bandwidth_mbps);
-                rank++;
+            // if (clients[i].total_bytes_up > 0 || clients[i].total_bytes_down > 0) {
+            //     mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s |  %d | %8.2f Mbps | %8.2f Mbps |",
+            //         rank, clients[i].ip, clients[i].port, up_bandwidth_mbps, down_bandwidth_mbps);
+            //     rank++;
+            // }
+
+            // 根据模式只显示相应的带宽信息
+            if (mode == 0) {  // 仅 UP 模式
+                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s |  %d | %8.2f Mbps |      N/A      |", rank, clients[i].ip, clients[i].port, up_bandwidth_mbps);
+            } else if (mode == 1) {  // 仅 DOWN 模式
+                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s |  %d |      N/A      | %8.2f Mbps |", rank, clients[i].ip, clients[i].port, down_bandwidth_mbps);
+            } else if (mode == 2) {  // DOUBLE 模式
+                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s |  %d | %8.2f Mbps | %8.2f Mbps |", rank, clients[i].ip, clients[i].port, up_bandwidth_mbps, down_bandwidth_mbps);
             }
+
+            rank++;  // 增加排名
 
             wrefresh(main_win); // 刷新窗口以显示更新的信息
 
@@ -192,6 +203,17 @@ void* input_listener(void* arg) {
             }
             mvwprintw(main_win, 4, 1, "Current Mode: \t%s    ", mode == 0 ? "UP" : (mode == 1) ? "DOWN" : "DOUBLE");
             wrefresh(main_win);
+
+            // 切换模式时，重置所有客户端的字节计数，避免错误显示
+            for (size_t i = 0; i < MAX_CLIENTS; i++) {
+                if (clients[i].is_active) {
+                    pthread_mutex_lock(&clients[i].lock);
+                    clients[i].total_bytes_up = 0;
+                    clients[i].total_bytes_down = 0;
+                    gettimeofday(&clients[i].start, NULL);  // 重置起始时间
+                    pthread_mutex_unlock(&clients[i].lock);
+                }
+            }
 
             // 通知所有客户端 模式已更改
             send_bandwidth_limit_to_clients(bandwidth_limit_mbps, mode);

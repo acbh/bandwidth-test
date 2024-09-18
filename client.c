@@ -159,15 +159,19 @@ void* receive_data(void* arg) {
         }
     } else {
         // TCP接收
-        while (!stop_receive_thread) {
+        while (!stop_receive_thread) { // 在非阻塞模式下暂时无数据接收时 不退出 而是继续等待新数据
             ssize_t n = recv(info->sockfd, buffer, BUFFER_SIZE, 0); // 接收数据
-            if (n <= 0) {
-                if (n < 0) {
-                    perror("recv failed");
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    usleep(1000); // 暂停一会儿，再试一次
+                    continue;
                 } else {
-                    printf("Server closed the connection.\n");
+                    perror("recv failed"); // 处理其他错误
+                    break; // 退出循环
                 }
-                break;
+            } else if (n == 0) {
+                printf("Server closed the connection.\n");
+                break; // 连接被服务器关闭
             }
 
             info->total_bytes_received += n;  // 累积下载的字节数
