@@ -249,7 +249,6 @@ void* handle_tcp_client_upload(void* arg) {
         // 根据设定的up带宽限制，计算每秒最多可以recv多少字节
         pthread_mutex_lock(&bandwidth_lock);
         double max_bytes_per_sec = (bandwidth_limit_mbps * 1e6) / 8;
-        // printf("Current bandwidth limit: %.2f Mbps, Max bytes per second: %.2f\n", bandwidth_limit_mbps, max_bytes_per_sec);
         pthread_mutex_unlock(&bandwidth_lock);
 
         // 如果本秒内recv的字节数超过限速，暂停recv数据

@@ -7,6 +7,8 @@
 #include <sys/time.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
 
 #define SERVER_PORT 5201
 #define BUFFER_SIZE 1470
@@ -300,11 +302,37 @@ void* client_mode_listener(void* arg) {
     exit(EXIT_FAILURE);
 }
 
+// 获取网络接口的广播地址
+void get_broadcast_address(char* interface, char* broadcast_ip) {
+    int fd;
+    struct ifreq ifr;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+
+    // 指定接口名
+    strncpy(ifr.ifr_name, interface, IFNAMSIZ - 1);
+
+    // 获取广播地址
+    if (ioctl(fd, SIOCGIFBRDADDR, &ifr) == -1) {
+        perror("ioctl(SIOCGIFBRDADDR)");
+        close(fd);
+        exit(EXIT_FAILURE);
+    }
+
+    struct sockaddr_in* brd_addr = (struct sockaddr_in*)&ifr.ifr_broadaddr;
+    strcpy(broadcast_ip, inet_ntoa(brd_addr->sin_addr));
+
+    close(fd);
+}
+
 void get_server_ip(char* server_ip) {
     int client_fd;
     struct sockaddr_in broadcast_addr;
     socklen_t addr_len = sizeof(broadcast_addr);
     char buffer[BUFFER_SIZE];
+
+    char broadcast_ip[INET_ADDRSTRLEN];
+    get_broadcast_address("enp2s0", broadcast_ip);  // 动态获取广播地址
 
     if ((client_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
         perror("udp socket create failed");
@@ -321,7 +349,7 @@ void get_server_ip(char* server_ip) {
     memset(&broadcast_addr, 0, sizeof(broadcast_addr));
     broadcast_addr.sin_family = AF_INET;
     broadcast_addr.sin_port = htons(5202); // 服务端监听广播的端口
-    broadcast_addr.sin_addr.s_addr = inet_addr("192.168.18.255");
+    broadcast_addr.sin_addr.s_addr = inet_addr(broadcast_ip);  // 使用动态广播地址
 
     char message[] = "DISCOVER_SERVER";
     sendto(client_fd, message, strlen(message), 0, (struct sockaddr*)&broadcast_addr, addr_len);
