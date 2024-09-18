@@ -67,7 +67,7 @@ void handle_alarm(int sig) {
 
     // 显示当前带宽限制
     mvwprintw(main_win, 6, 1, "Current Bandwidth Limit: %.2f Mbps            ", bandwidth_limit_mbps);
-    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d   ", connected_clients, run_time);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %ds   ", connected_clients, run_time);
     // mvwprintw(main_win, 7, 1, "Enter new bandwidth limit (Mbps):            ");
     wrefresh(main_win);
 
@@ -241,23 +241,26 @@ void* handle_tcp_client_upload(void* arg) {
         client->total_bytes_up += len;  // 记录上传的字节数
         bytes_received_in_second += len;
         pthread_mutex_unlock(&client->lock);
-    }
 
-    gettimeofday(&end_time, NULL);
-    double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
-                              ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
+        gettimeofday(&end_time, NULL);
+        double elapsed_time = (end_time.tv_sec - start_time.tv_sec) +
+                                  ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
 
-    // 根据设定的up带宽限制，计算每秒最多可以recv多少字节
-    double max_bytes_per_sec = (bandwidth_limit_mbps * 1e6) / 8;
+        // 根据设定的up带宽限制，计算每秒最多可以recv多少字节
+        pthread_mutex_lock(&bandwidth_lock);
+        double max_bytes_per_sec = (bandwidth_limit_mbps * 1e6) / 8;
+        // printf("Current bandwidth limit: %.2f Mbps, Max bytes per second: %.2f\n", bandwidth_limit_mbps, max_bytes_per_sec);
+        pthread_mutex_unlock(&bandwidth_lock);
 
-    // 如果本秒内recv的字节数超过限速，暂停recv数据
-    if (elapsed_time < 1.0 && bytes_received_in_second >= max_bytes_per_sec) {
-        usleep((1.0 - elapsed_time) * 1000000);  // 暂停，直到1秒钟结束
-        gettimeofday(&start_time, NULL);  // 重置时间
-        bytes_received_in_second = 0;  // 重置每秒recv字节数
-    } else if (elapsed_time >= 1.0) {
-        gettimeofday(&start_time, NULL);  // 如果超过1秒，重置时间
-        bytes_received_in_second = 0;  // 重置每秒recv字节数
+        // 如果本秒内recv的字节数超过限速，暂停recv数据
+        if (elapsed_time < 1.0 && bytes_received_in_second >= max_bytes_per_sec) {
+            usleep((1.0 - elapsed_time) * 1000000);  // 暂停，直到1秒钟结束
+            gettimeofday(&start_time, NULL);  // 重置时间
+            bytes_received_in_second = 0;  // 重置每秒recv字节数
+        } else if (elapsed_time >= 1.0) {
+            gettimeofday(&start_time, NULL);  // 如果超过1秒，重置时间
+            bytes_received_in_second = 0;  // 重置每秒recv字节数
+        }
     }
 
     close(client->fd);
@@ -270,7 +273,7 @@ void* handle_tcp_client_upload(void* arg) {
     }
     pthread_mutex_unlock(&client_count_lock);
     // 更新界面
-    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %ds", connected_clients, run_time);
     wrefresh(main_win);
 
     pthread_exit(NULL);
@@ -304,7 +307,11 @@ void* handle_tcp_client_download(void* arg) {
                               ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
 
         // 根据设定的下行带宽限制，计算每秒最多可以发送多少字节
+        // double max_bytes_per_sec = (bandwidth_limit_mbps * 1e6) / 8;
+        pthread_mutex_lock(&bandwidth_lock);
         double max_bytes_per_sec = (bandwidth_limit_mbps * 1e6) / 8;
+        pthread_mutex_unlock(&bandwidth_lock);
+
 
         // 如果本秒内发送的字节数超过限速，暂停发送数据
         if (elapsed_time < 1.0 && bytes_sent_in_second >= max_bytes_per_sec) {
@@ -327,7 +334,7 @@ void* handle_tcp_client_download(void* arg) {
     }
     pthread_mutex_unlock(&client_count_lock);
     // 更新界面
-    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %ds", connected_clients, run_time);
     wrefresh(main_win);
 
     pthread_exit(NULL);
@@ -432,7 +439,7 @@ void* monitor_clients(void* arg) {
                     connected_clients --;
                     pthread_mutex_unlock(&client_count_lock);
 
-                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %ds", connected_clients, run_time);
                     wrefresh(main_win);
                 }
 
@@ -450,7 +457,7 @@ void* monitor_clients(void* arg) {
                     connected_clients--;
                     pthread_mutex_unlock(&client_count_lock);
 
-                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %ds", connected_clients, run_time);
                     wrefresh(main_win);
 
                     printf("Client %s:%d timed out and disconnected.\n", clients[i].ip, clients[i].port);
@@ -575,7 +582,7 @@ int main(int argc, char* argv[]) {
     box(main_win, 0, 0);
     mvwprintw(main_win, 1, 1, "Server    IP:\t\t%s\t Server    Port:     %d", server_ip, SERVER_PORT);
     mvwprintw(main_win, 2, 1, "Broadcast IP:\t\t%s\t Broadcast Port:     %d", "192.168.18.255", 5202);
-    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %ds", connected_clients, run_time);
     mvwprintw(main_win, 4, 1, "Current Mode: \t%s", mode == 0 ? "UP" : (mode == 1) ? "DOWN" : "DOUBLE");
     // mvwprintw(main_win, 5, 1, "Bandwidth Limit: %.2f Mbps", bandwidth_limit_mbps); // 在 listen_for_input 中实现
 
@@ -703,7 +710,7 @@ int main(int argc, char* argv[]) {
                     connected_clients ++;
                     pthread_mutex_unlock(&client_count_lock);
                     // 更新界面
-                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %d", connected_clients, run_time);
+                    mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %ds", connected_clients, run_time);
                     wrefresh(main_win);
 
                     break;

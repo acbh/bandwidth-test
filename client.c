@@ -96,22 +96,20 @@ void* send_data(void* arg) {
             bytes_sent_in_second += n;
             pthread_mutex_unlock(&info->lock);
 
-            clock_gettime(CLOCK_MONOTONIC, &ts_current);
-            double elapsed_time = (ts_current.tv_sec - ts_start.tv_sec) +
-                                  (ts_current.tv_nsec - ts_start.tv_nsec) / 1e9;
+            gettimeofday(&end_time, NULL);
+            double elapsed_time = (end_time.tv_sec - start_time.tv_sec) + 
+                                  ((end_time.tv_usec - start_time.tv_usec) / 1000000.0);
 
+            // Get the max allowed bytes per second based on bandwidth
             double max_bytes_per_sec = (info->bandwidth_limit_mbps * 1e6) / 8;
 
-            if (elapsed_time >= 1.0) {
-                clock_gettime(CLOCK_MONOTONIC, &ts_start);
-                bytes_sent_in_second = 0;
-            } else if (bytes_sent_in_second >= max_bytes_per_sec) {
-                double sleep_time = 1.0 - elapsed_time;
-                if (sleep_time > 0) {
-                    usleep(sleep_time * 1e6);
-                }
-                clock_gettime(CLOCK_MONOTONIC, &ts_start);
-                bytes_sent_in_second = 0;
+            if (elapsed_time < 1.0 && bytes_sent_in_second >= max_bytes_per_sec) {
+                usleep((1.0 - elapsed_time) * 1000000);  // Sleep until 1 second is over
+                gettimeofday(&start_time, NULL);         // Reset the timer for the next second
+                bytes_sent_in_second = 0;                // Reset the sent bytes counter
+            } else if (elapsed_time >= 1.0) {
+                gettimeofday(&start_time, NULL);         // Reset timer if more than 1 second passed
+                bytes_sent_in_second = 0;                // Reset the byte counter for new second
             }
         }
     }
@@ -246,7 +244,7 @@ void* client_mode_listener(void* arg) {
                     receive_thread_active = 0;
                 }
 
-                // 停止标志位重置
+                // 重置停止标志位
                 stop_send_thread = 0;
                 stop_receive_thread = 0;
 
