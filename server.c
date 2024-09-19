@@ -15,6 +15,7 @@
 #define SERVER_PORT 5201
 #define BUFFER_SIZE 1470
 #define MAX_CLIENTS 10
+#define BROADCAST_PORT 5202
 
 WINDOW *main_win; // ncurses窗口指针
 
@@ -35,6 +36,7 @@ typedef struct {
 client_info_t clients[MAX_CLIENTS];
 int is_tcp = 1; // 默认TCP
 char server_ip[INET_ADDRSTRLEN];
+char broadcast_ip[INET_ADDRSTRLEN];
 // int current_mode = 0;
 double bandwidth_limit_mbps = 1000000; // 100Gbps
 int connected_clients = 0;
@@ -97,11 +99,11 @@ void handle_alarm(int sig) {
 
             // 根据模式只显示相应的带宽信息
             if (mode == 0) {  // 仅 UP 模式
-                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s |  %d | %8.2f Mbps |      N/A      |", rank, clients[i].ip, clients[i].port, up_bandwidth_mbps);
+                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %-15s|  %d | %8.2f Mbps |      N/A      |", rank, clients[i].ip, clients[i].port, up_bandwidth_mbps);
             } else if (mode == 1) {  // 仅 DOWN 模式
-                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s |  %d |      N/A      | %8.2f Mbps |", rank, clients[i].ip, clients[i].port, down_bandwidth_mbps);
+                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %-15s|  %d |      N/A      | %8.2f Mbps |", rank, clients[i].ip, clients[i].port, down_bandwidth_mbps);
             } else if (mode == 2) {  // DOUBLE 模式
-                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %s |  %d | %8.2f Mbps | %8.2f Mbps |", rank, clients[i].ip, clients[i].port, up_bandwidth_mbps, down_bandwidth_mbps);
+                mvwprintw(main_win, rank + 10, 1, "| [%2d] | %-15s|  %d | %8.2f Mbps | %8.2f Mbps |", rank, clients[i].ip, clients[i].port, up_bandwidth_mbps, down_bandwidth_mbps);
             }
 
             rank++;  // 增加排名
@@ -546,6 +548,33 @@ void* handle_broadcast_requests(void* arg) {
     return NULL;
 }
 
+// 获取指定网络接口的广播地址
+int get_broadcast_address(const char *interface, char *broadcast_ip, size_t buffer_size) {
+    int fd;
+    struct ifreq ifr;
+
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        perror("socket failed");
+        return -1;
+    }
+
+    strncpy(ifr.ifr_name, interface, IFNAMSIZ - 1);
+
+    // 通过 ioctl 获取网络接口的广播地址
+    if (ioctl(fd, SIOCGIFBRDADDR, &ifr) < 0) {
+        perror("ioctl(SIOCGIFBRDADDR) failed");
+        close(fd);
+        return -1;
+    }
+
+    struct sockaddr_in *broadaddr = (struct sockaddr_in *)&ifr.ifr_broadaddr;
+    inet_ntop(AF_INET, &broadaddr->sin_addr, broadcast_ip, buffer_size);
+
+    close(fd);
+    return 0;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 3) {
         fprintf(stderr, "Usage: %s <tcp/udp> <up/down/double>\n", argv[0]);
@@ -572,6 +601,11 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    if (get_broadcast_address("enp2s0", broadcast_ip, sizeof(broadcast_ip)) != 0) {
+        fprintf(stderr, "Failed to get broadcast address for eth0\n");
+        exit(EXIT_FAILURE);
+    }
+
     // 初始化ncurses
     initscr();
     cbreak();
@@ -580,7 +614,7 @@ int main(int argc, char* argv[]) {
     main_win = newwin(MAX_CLIENTS * 2 + 4, 80, 0, 0);
     box(main_win, 0, 0);
     mvwprintw(main_win, 1, 1, "Server    IP:\t\t%s\t Server    Port:     %d", server_ip, SERVER_PORT);
-    mvwprintw(main_win, 2, 1, "Broadcast IP:\t\t%s\t Broadcast Port:     %d", "192.168.18.255", 5202);
+    mvwprintw(main_win, 2, 1, "Broadcast IP:\t\t%s\t Broadcast Port:     %d", broadcast_ip, BROADCAST_PORT);
     mvwprintw(main_win, 3, 1, "connected_clients: \t%d\t\t Running   time:     %ds", connected_clients, run_time);
     mvwprintw(main_win, 4, 1, "Current Mode: \t%s", mode == 0 ? "UP" : (mode == 1) ? "DOWN" : "DOUBLE");
     // mvwprintw(main_win, 5, 1, "Bandwidth Limit: %.2f Mbps", bandwidth_limit_mbps); // 在 listen_for_input 中实现
