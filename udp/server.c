@@ -38,12 +38,12 @@
 #define MAX_EVENTS 12
 #define NUM_THREADS 4
 #define BUFFER_SIZE 1470
-#define MAX_CLIENTS 3
+#define MAX_CLIENTS 12
 #define PORT 8888
 #define BROADCAST_IP "192.168.1.255" // 目标广播地址
 #define BROADCAST_PORT 8888          // 目标端口
 #define BROADCAST_INTERVAL 1         // 每秒发送一次
-#define BROADCAST_DURATION 10        // 发送持续10秒
+#define BROADCAST_DURATION 10        // 发送持续10秒 改为持续广播
 
 #define SERVER_PORT 9999 // 监听的端口
 // #define MAX_EVENTS 10    // 最大事件数
@@ -132,10 +132,10 @@ void cleanup(void *arg)
     // printf("Cleaning up resources\n");
 }
 
-void handle_alarm(int signum)
+void handle_alarm(int signum) // up
 {
     double bandwidth[MAX_CLIENTS] = {0};
-    for (size_t i = 0; i < MAX_CLIENTS; i++)
+    for (size_t i = 1; i < MAX_CLIENTS; i++)
     {
         if (clients[i].client_port == 0)
         {
@@ -147,7 +147,7 @@ void handle_alarm(int signum)
 
             bandwidth[i] = ((double)clients[i].sum * 8.0) / 1e6;                                                                                                         // 转换为 Mbps
             // mvwprintw(win, i + 15, 1, "|IP地址:| %-16s | 上传速度为: | %-6.2lf M/s | 带宽为: | %-6.2lf Mbps", clients[i].client_ip, clients[i].sum / 1e6, bandwidth[i]); // 在窗口中显示文本
-            mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps |      N/A      |", i, clients[i].client_ip, clients[i].client_port, bandwidth[i]);
+            mvwprintw(win, i + 8, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps |      N/A      |", i, clients[i].client_ip, clients[i].client_port, bandwidth[i]);
             wrefresh(win);
             clients[i].sum = 0; // 清零累计值，准备下一次统计
         }
@@ -167,14 +167,14 @@ void handle_alarm1(int signum)
         {
             bandwidth[i] = ((double)clients[i].sum1 * 8.0) / 1e6;                                                                                                         // 转换为 Mbps
             // mvwprintw(win, i + 15, 1, "|IP地址:| %-16s | 下載速度为: | %-6.2lf M/s | 带宽为: | %-6.2lf Mbps", clients[i].client_ip, clients[i].sum1 / 1e6, bandwidth[i]); // 在窗口中显示文本
-            mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d |      N/A      | %8.2f Mbps |", i, clients[i].client_ip, clients[i].client_port, bandwidth[i]);
+            mvwprintw(win, i + 8, 5, "| [%2d] | %-15s|  %-5d |      N/A      | %8.2f Mbps |", i, clients[i].client_ip, clients[i].client_port, bandwidth[i]);
             wrefresh(win);
             clients[i].sum1 = 0; // 清零累计值，准备下一次统计
         }
     }
 }
 
-void handle_alarm2(int signum)
+void handle_alarm2(int signum) // double
 {
     bucket_size = input_1 * 1000 * 1000 / 8; // 计算桶的容量
     for (size_t i = 0; i < MAX_CLIENTS; i++)
@@ -188,7 +188,7 @@ void handle_alarm2(int signum)
 
     double bandwidth[MAX_CLIENTS] = {0};
     double bandwidth1[MAX_CLIENTS] = {0};
-    for (size_t i = 0; i < MAX_CLIENTS; i++)
+    for (size_t i = 1; i < MAX_CLIENTS; i++)
     {
         if (clients[i].client_port == 0)
         {
@@ -199,7 +199,7 @@ void handle_alarm2(int signum)
             bandwidth[i] = ((double)clients[i].sum * 8.0) / 1e6;
             bandwidth1[i] = ((double)clients[i].sum1 * 8.0) / 1e6;                                                                                                       // 转换为 Mbps
             // mvwprintw(win, i + 15, 1, "|IP地址:| %-16s | 上传带宽为: | %-6.2lf Mbps |   下载带宽为: | %-6.2lf Mbps", clients[i].client_ip, bandwidth[i], bandwidth1[i]); // 在窗口中显示文本
-            mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps | %8.2f Mbps |", i, clients[i].client_ip, clients[i].client_port, bandwidth[i], bandwidth1[i]);
+            mvwprintw(win, i + 8, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps | %8.2f Mbps |", i, clients[i].client_ip, clients[i].client_port, bandwidth[i], bandwidth1[i]);
             wrefresh(win);
             clients[i].sum = 0;
             clients[i].sum1 = 0; // 清零累计值，准备下一次统计
@@ -207,7 +207,7 @@ void handle_alarm2(int signum)
     }
 }
 
-void handle_alarm4(int sig)
+void handle_alarm4(int sig) // down
 {
     bucket_size = input_1 * 1000 * 1000 / 8; // 计算桶的容量
     for (size_t i = 0; i < MAX_CLIENTS; i++)
@@ -218,7 +218,7 @@ void handle_alarm4(int sig)
     total_bytes = 0;
     total_bytes_double = 0;
     double bandwidth[MAX_CLIENTS] = {0};
-    for (size_t i = 0; i < MAX_CLIENTS; i++)
+    for (size_t i = 1; i < MAX_CLIENTS; i++)
     {
         if (clients[i].client_port == 0)
         {
@@ -229,7 +229,8 @@ void handle_alarm4(int sig)
 
             bandwidth[i] = ((double)clients[i].sum1 * 8.0) / 1e6;                                                                                                         // 转换为 Mbps
             // mvwprintw(win, i + 15, 1, "|IP地址:| %-16s | 下載速度为: | %-6.2lf M/s | 带宽为: | %-6.2lf Mbps", clients[i].client_ip, clients[i].sum1 / 1e6, bandwidth[i]); // 在窗口中显示文本
-            mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps |      N/A      |", i, clients[i].client_ip, clients[i].client_port, bandwidth[i]);
+            // mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps |      N/A      |", i, clients[i].client_ip, clients[i].client_port, bandwidth[i]);
+            mvwprintw(win, i + 8, 5, "| [%2d] | %-15s|  %-5d |      N/A      | %8.2f Mbps |", i, clients[i].client_ip, clients[i].client_port, bandwidth[i]);
             wrefresh(win);
             clients[i].sum1 = 0; // 清零累计值，准备下一次统计
         }
@@ -416,7 +417,7 @@ void handle_client_connections_up_udp(int udp_fd)
     // 清理 epoll 文件描述符
     return;
 }
-
+// 向客户端发送数据
 void *send_data_to_client(void *arg)
 {
 
@@ -505,7 +506,7 @@ void *send_data_to_client(void *arg)
     // close(clients[client_index].client_fd); // 关闭连接
     return NULL;
 }
-
+// 向客户端发送数据线程
 void handle_client_connections_down_udp(int udp_fd)
 {
 
@@ -595,7 +596,6 @@ void *double_data_to_client(void *arg)
         }
         if (global_var != 3)
         {
-            /* code */
             break;
         }
         // while (1)
@@ -691,7 +691,6 @@ void *double_data_to_client_recv()
 
 void handle_client_connections_double_udp(int udp_fd)
 {
-
     // 停止定时器
     struct itimerval stop_timer;
     stop_timer.it_value.tv_sec = 0;
@@ -778,15 +777,15 @@ void create_new_task_udp(int task)
 {
     if (current_task == 1 && pthread_cancel(upload_thread) == 0)
     {
-        mvwprintw(win, 24, 1, "cancel up thread .......\n");
+        // mvwprintw(win, 24, 1, "cancel up thread .......\n");
     }
     else if (current_task == 2 && pthread_cancel(download_thread) == 0)
     {
-        mvwprintw(win, 24, 1, "cancel down thread.......\n");
+        // mvwprintw(win, 24, 1, "cancel down thread.......\n");
     }
     else if (current_task == 3 && pthread_cancel(double_thread) == 0)
     {
-        mvwprintw(win, 24, 1, "cancel double thread...\n");
+        // mvwprintw(win, 24, 1, "cancel double thread...\n");
     }
 
     current_task = task; // 更新当前任务
@@ -808,7 +807,6 @@ void create_new_task_udp(int task)
 
 void ncurses_main()
 {
-
     int height, width, start_y, start_x;
     struct ifaddrs *ifaddr, *ifa;
     char ip[INET_ADDRSTRLEN]; // 用于存储IPv4地址
@@ -834,14 +832,14 @@ void ncurses_main()
     win = newwin(height, width, start_y, start_x);
     box(win, 0, 0);
 
-    mvwprintw(win, 2, 5, "Broadcast addr:   192.168.1.255                   port:    9999");
-    mvwprintw(win, 3, 5, "size:             1470 bit", client_count);
+    mvwprintw(win, 2, 5, "Broadcast addr:   192.168.1.255                   port:    5202");
+    mvwprintw(win, 3, 5, "size:             1500 bytes                  protocol:     UDP");
     // mvwprintw(win, 4, 1, "Mode:             double                                     Limit:       no limit");
-    mvwprintw(win, 4, 5, "1)UP    2)DOWN    3)double     4)limit    5)cancel      q)exit");
+    mvwprintw(win, 4, 5, "1)UP    2)DOWN    3)double     4)limit    5)cancel      q)quit");
     // mvwprintw(win, 6, 1, "pre               next                                       set          limit    exit");
     // mvwprintw(win, 5, 5, "Connected device: %d                                 Run time: %d     ", 0, 0);
     mvwprintw(win, 7, 5, "| RANK | IP             |  PORT  |  UP           |  DOWN         |");
-    mvwprintw(win, 8, 6, "----------------------------------------------------------------");
+    mvwprintw(win, 8, 6,  "----------------------------------------------------------------");
     // mvwprintw(win, 15, 1, "Average bw:      0.00      |       Average bw :       0.00");
     wrefresh(win);
 
@@ -873,7 +871,7 @@ void ncurses_main()
                     if (inet_ntop(family, &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr, ip, sizeof(ip)) != NULL)
                     {
                         // printf("Interface: %s\tIP Address: %s\n", ifa->ifa_name, ip);
-                        mvwprintw(win, 1, 5, "Server    addr:   %s                   port:    %d", ip, PORT);
+                        mvwprintw(win, 1, 5, "Server    addr:   %s                   port:    %d", ip, 5201);
                         wrefresh(win);
                     }
                 }
@@ -931,7 +929,7 @@ void ncurses_main()
                     if (i > 0)
                     {
                         i--;
-                        mvwprintw(win, 6, 7 + i, " "); // 删除字符
+                        mvwprintw(win, 5, 7 + i, " "); // 删除字符
                         wmove(win, 6, 7 + i);          // 移动光标
                     }
                 }
@@ -943,7 +941,7 @@ void ncurses_main()
                         if (i < sizeof(input) - 1)
                         {
                             input[i++] = ch1;
-                            mvwprintw(win, 6, 7 + i - 1, "%c", ch1);
+                            mvwprintw(win, 5, 7 + i - 1, "%c", ch1);
                         }
                     }
                 }

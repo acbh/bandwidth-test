@@ -18,7 +18,7 @@
 #define TASK_PORT 8888      // 任务线程连接的端口
 #define BROADCAST_PORT 8888 // 广播接收端口
 #define BUFFER_SIZE 1470
-#define MAX_EVENTS 3
+#define MAX_EVENTS 12
 
 // 全局变量
 int control_sockfd, task_sockfd, epollfd, udp_fd;
@@ -55,7 +55,7 @@ void handle_alarm(int sig)
     total_bytes_double = 0;
 }
 
-// 发送线程函数（限速和无限速处理）
+// 发送UDP数据包 线程函数（限速和无限速处理）
 void *send_thread_func_udp(void *arg)
 {
     char send_buffer[BUFFER_SIZE];
@@ -84,8 +84,7 @@ void *send_thread_func_udp(void *arg)
         if (task_lime == 4) // 限速模式
         {
 
-            bytes_read = sendto(udp_fd, send_buffer, sizeof(send_buffer), 0,
-                                (struct sockaddr *)&server_addr, addr_len);
+            bytes_read = sendto(udp_fd, send_buffer, sizeof(send_buffer), 0, (struct sockaddr *)&server_addr, addr_len);
 
             while (tokens < bytes_read)
             {
@@ -100,12 +99,10 @@ void *send_thread_func_udp(void *arg)
         }
         else if (task_lime != 4)
         {
-            bytes_read = sendto(udp_fd, send_buffer, sizeof(send_buffer), 0,
-                                (struct sockaddr *)&server_addr, addr_len);
+            bytes_read = sendto(udp_fd, send_buffer, sizeof(send_buffer), 0, (struct sockaddr *)&server_addr, addr_len);
         }
         if (current_task != 1)
         {
-            /* code */
             break;
         }
     }
@@ -273,15 +270,15 @@ void handle_task_udp(int task)
 {
     if (current_task == 1 && pthread_cancel(send_thread) == 0)
     {
-        printf("cancel send thread...\n");
+        // printf("cancel send thread...\n");
     }
     else if (current_task == 2 && pthread_cancel(recv_thread) == 0)
     {
-        printf("cancel recv thread...\n");
+        // printf("cancel recv thread...\n");
     }
     else if (current_task == 3 && pthread_cancel(double_thread) == 0)
     {
-        printf("cancel double thread...\n");
+        // printf("cancel double thread...\n");
     }
 
     current_task = task;
@@ -394,7 +391,7 @@ int create_socket_and_connect(int port, const char *ip_address)
         close(sockfd_local);
         exit(EXIT_FAILURE);
     }
-    printf("connected %s port %d \n", ip_address, port);
+    printf("connected %s \n", ip_address);
 
     return sockfd_local;
 }

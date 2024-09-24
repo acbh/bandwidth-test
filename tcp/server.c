@@ -1076,9 +1076,9 @@ void ncurses_main()
     box(win, 0, 0);
 
     mvwprintw(win, 2, 5, "Broadcast addr:   192.168.1.255                   port:    5202");
-    mvwprintw(win, 3, 5, "size:             1470 bit", client_count);
+    mvwprintw(win, 3, 5, "size:             1500 bytes                  protocol:     TCP");
     // mvwprintw(win, 4, 1, "Mode:             double                                     Limit:       no limit");
-    mvwprintw(win, 4, 5, "1)UP    2)DOWN    3)double     4)limit    5)cancel      q)exit");
+    mvwprintw(win, 4, 5, "1)UP    2)DOWN    3)double     4)limit    5)cancel      0)list");
     // mvwprintw(win, 6, 1, "pre               next                                       set          limit    exit");
     // mvwprintw(win, 5, 5, "Connected device: %d                                 Run time: %d     ", 0, 0);
     mvwprintw(win, 7, 5, "| RANK | IP             |  PORT  |  UP           |  DOWN         |");
@@ -1174,7 +1174,7 @@ void ncurses_main()
                     if (i > 0)
                     {
                         i--;
-                        mvwprintw(win, 6, 7 + i, " "); // 删除字符
+                        mvwprintw(win, 5, 7 + i, " "); // 删除字符
                         wmove(win, 6, 7 + i);          // 移动光标
                     }
                 }
@@ -1186,7 +1186,7 @@ void ncurses_main()
                         if (i < sizeof(input) - 1)
                         {
                             input[i++] = ch1;
-                            mvwprintw(win, 6, 7 + i - 1, "%c", ch1);
+                            mvwprintw(win, 5, 7 + i - 1, "%c     ", ch1);
                         }
                     }
                 }
