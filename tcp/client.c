@@ -48,7 +48,7 @@ void handle_alarm(int sig)
     bucket_size = buffer_sum * 1024 * 1024 / 8;
     // 每秒增加一定的令牌（即允许通过的字节数）
     tokens = bucket_size;
-    tokens_double = bucket_size; // 双令牌容量
+    tokens_double = bucket_size; // 令牌容量
 
     total_bytes = 0; // 重置接收字节数
     total_bytes_double = 0;
@@ -365,15 +365,15 @@ void handle_task(int task)
     // 如果当前有任务正在运行，取消它
     if (current_task == 1 && pthread_cancel(send_thread) == 0)
     {
-        printf("cancel send thread...\n");
+        // printf("cancel send thread...\n");
     }
     else if (current_task == 2 && pthread_cancel(recv_thread) == 0)
     {
-        printf("cancel recv thread...\n");
+        // printf("cancel recv thread...\n");
     }
     else if (current_task == 3 && pthread_cancel(double_thread) == 0)
     {
-        printf("cancel double thread...\n");
+        // printf("cancel double thread...\n");
     }
 
     // 创建 epoll 实例用于任务线程
@@ -439,7 +439,7 @@ int create_socket_and_connect(int port, const char *ip_address)
         close(sockfd_local);
         exit(EXIT_FAILURE);
     }
-    printf("connected %s port %d \n", ip_address, port);
+    printf("connected to server %s  \n", ip_address);
 
     return sockfd_local;
 }

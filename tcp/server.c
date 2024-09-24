@@ -62,7 +62,7 @@ socklen_t addr_len = sizeof(server_addr);
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond_var = PTHREAD_COND_INITIALIZER;
 int current_task = 0; // 0: no task, 1: upload, 2: download, 3: double
-pthread_t upload_thread, download_thread, double_thread;
+pthread_t upload_thread, download_thread, double_thread, xianshi_thread;
 
 typedef struct
 {
@@ -93,8 +93,9 @@ void cleanup(void *arg)
     // printf("Cleaning up resources\n");
 }
 
-void handle_alarm(int signum)
+void handle_alarm0(int signum)
 {
+    int rank = 0;
     double bandwidth[MAX_CLIENTS] = {0};
     for (size_t i = 0; i < MAX_CLIENTS; i++)
     {
@@ -104,7 +105,24 @@ void handle_alarm(int signum)
         }
         bandwidth[i] = ((double)clients[i].sum * 8.0) / 1048576;                                                                                                         // 转换为 Mbps
         
-        mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps |      N/A      |", i, clients[i].client_ip, clients[i].port, bandwidth[i]);
+        mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d |               |               |", i, clients[i].client_ip, clients[i].port, bandwidth[i]);
+        wrefresh(win);
+        clients[i].sum = 0; // 清零累计值，准备下一次统计
+    }
+}
+void handle_alarm(int signum)
+{
+    int rank = 0;
+    double bandwidth[MAX_CLIENTS] = {0};
+    for (size_t i = 0; i < MAX_CLIENTS; i++)
+    {
+        if (clients[i].port == 0)
+        {
+            continue;
+        }
+        bandwidth[i] = ((double)clients[i].sum * 8.0) / 1048576;                                                                                                         // 转换为 Mbps
+        
+        mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps |      N/A      |     ", i, clients[i].client_ip, clients[i].port, bandwidth[i]);
         wrefresh(win);
         clients[i].sum = 0; // 清零累计值，准备下一次统计
     }
@@ -121,7 +139,7 @@ void handle_alarm1(int signum)
         }
         bandwidth[i] = ((double)clients[i].sum1 * 8.0) / 1048576;                                                                                                         // 转换为 Mbps
         
-        mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d |      N/A      | %8.2f Mbps |", i, clients[i].client_ip, clients[i].port, bandwidth[i]);
+        mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d |      N/A      | %8.2f Mbps |     ", i, clients[i].client_ip, clients[i].port, bandwidth[i]);
         wrefresh(win);
         clients[i].sum1 = 0;
     }
@@ -140,7 +158,7 @@ void handle_alarm2(int signum)
         bandwidth[i] = ((double)clients[i].sum * 8.0) / 1048576;
         bandwidth1[i] = ((double)clients[i].sum1 * 8.0) / 1048576;                                                                                                       // 转换为 Mbps
         // mvwprintw(win, i + 15, 1, "|IP:| %-16s | UP: | %-6.2lf Mbps |   DOWN: | %-6.2lf Mbps", clients[i].client_ip, bandwidth[i], bandwidth1[i]); // 在窗口中显示文本
-        mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps | %8.2f Mbps |", i, clients[i].client_ip, clients[i].port, bandwidth[i], bandwidth1[i]);
+        mvwprintw(win, i + 9, 5, "| [%2d] | %-15s|  %-5d | %8.2f Mbps | %8.2f Mbps |     ", i, clients[i].client_ip, clients[i].port, bandwidth[i], bandwidth1[i]);
         wrefresh(win);
         clients[i].sum = 0;
         clients[i].sum1 = 0; // 清零累计值，准备下一次统计
@@ -398,7 +416,7 @@ void handle_client_connections_up(int listen_fd)
                     }
                     else
                     {
-                        perror("recv failed");
+                        // perror("recv failed");
                     }
                     close(client_fd);
                     epoll_ctl(epollfd, EPOLL_CTL_DEL, client_fd, NULL);
@@ -669,7 +687,197 @@ void handle_client_connections_double(int listen_fd)
                     ssize_t recv_len = recv(client_fd, recv_buffer, sizeof(recv_buffer), 0);
                     if (recv_len == -1)
                     {
-                        perror("recv failed");
+                        // perror("recv failed");
+                        close(client_fd);
+                        epoll_ctl(epollfd, EPOLL_CTL_DEL, client_fd, NULL);
+
+                        // 移除客户端信息
+                        for (int j = 0; j < MAX_CLIENTS; j++)
+                        {
+                            if (clients[j].client_fd == client_fd)
+                            {
+                                clients[j].client_fd = 0;
+                                break;
+                            }
+                        }
+                    }
+                    else if (recv_len == 0)
+                    {
+                        // 客户端关闭连接
+                        // printf("客户端 fd: %d 关闭连接\n", client_fd);
+                        close(client_fd);
+                        epoll_ctl(epollfd, EPOLL_CTL_DEL, client_fd, NULL);
+
+                        // 移除客户端信息
+                        for (int j = 0; j < MAX_CLIENTS; j++)
+                        {
+                            if (clients[j].client_fd == client_fd)
+                            {
+                                clients[j].client_fd = 0;
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // 记录客户端接收的数据长度
+                        for (int j = 0; j < MAX_CLIENTS; j++)
+                        {
+                            if (clients[j].client_fd == client_fd)
+                            {
+                                clients[j].sum += recv_len;
+                                // 打印接收到的数据大小
+                                // printf("接收到 %zd 字节，客户端 fd: %d，总计接收：%ld 字节\n", recv_len, client_fd, clients[j].sum);
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // 处理可写事件
+                if (events[i].events & EPOLLOUT)
+                {
+                    ssize_t sent_len = send(client_fd, message, message_len, 0);
+                    if (sent_len == -1)
+                    {
+                        // perror("send failed"); // 连接被对方重设
+                        close(client_fd);
+                        epoll_ctl(epollfd, EPOLL_CTL_DEL, client_fd, NULL);
+
+                        // 移除客户端信息
+                        for (int j = 0; j < MAX_CLIENTS; j++)
+                        {
+                            if (clients[j].client_fd == client_fd)
+                            {
+                                clients[j].client_fd = 0;
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // 记录客户端发送的数据长度
+                        for (int j = 0; j < MAX_CLIENTS; j++)
+                        {
+                            if (clients[j].client_fd == client_fd)
+                            {
+                                clients[j].sum1 += sent_len;
+                                // printf("发送数据：%zd 字节，客户端 fd: %d，总计发送：%ld 字节\n", sent_len, client_fd, clients[j].sum1);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void handle_client_connections_xianshi(int listen_fd)
+{
+    // 停止定时器
+    struct itimerval stop_timer;
+    stop_timer.it_value.tv_sec = 0;
+    stop_timer.it_value.tv_usec = 0;
+    stop_timer.it_interval.tv_sec = 0;
+    stop_timer.it_interval.tv_usec = 0;
+    setitimer(ITIMER_REAL, &stop_timer, NULL);
+
+    // 信号处理
+    signal(SIGALRM, handle_alarm0);
+    struct itimerval timer;
+    timer.it_value.tv_sec = 1; // 1秒后触发第一次
+    timer.it_value.tv_usec = 0;
+    timer.it_interval.tv_sec = 1; // 每隔1秒触发一次
+    timer.it_interval.tv_usec = 0;
+    setitimer(ITIMER_REAL, &timer, NULL);
+
+    struct epoll_event events[MAX_EVENTS];
+    struct epoll_event ev;
+    char client_ip[INET_ADDRSTRLEN];
+    char message[BUFFER_SIZE];             // 创建包含A的缓冲区
+    memset(message, 'A', sizeof(message)); // 用字符'A'填充缓冲区
+    size_t message_len = sizeof(message);  // 消息长度等于缓冲区大小
+
+    while (1)
+    {
+        int nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
+        if (nfds == -1)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            else
+            {
+                perror("epoll_wait");
+                close(listen_fd);
+                close(epollfd);
+                exit(EXIT_FAILURE);
+            }
+        }
+
+        // 遍历所有就绪的文件描述符
+        for (int i = 0; i < nfds; i++)
+        {
+            if (events[i].data.fd == listen_fd)
+            {
+                // 处理新客户端连接
+                struct sockaddr_in client_addr;
+                socklen_t client_len = sizeof(client_addr);
+                int client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &client_len);
+                if (client_fd == -1)
+                {
+                    perror("accept failed");
+                    continue;
+                }
+
+                inet_ntop(AF_INET, &(client_addr.sin_addr), client_ip, INET_ADDRSTRLEN);
+
+                // 将客户端添加到客户端信息数组
+                int client_index = -1;
+                for (int j = 0; j < MAX_CLIENTS; j++)
+                {
+                    if (clients[j].client_fd == 0)
+                    {
+                        client_index = j;
+                        clients[j].client_fd = client_fd;
+                        clients[j].port = ntohs(client_addr.sin_port); // 记录客户端端口
+                        strncpy(clients[j].client_ip, client_ip, INET_ADDRSTRLEN);
+                        clients[j].sum = 0;  // 初始化接收字节数
+                        clients[j].sum1 = 0; // 初始化发送字节数
+                        break;
+                    }
+                }
+
+                if (client_index != -1)
+                {
+                    ev.events = EPOLLIN | EPOLLOUT; // 同时监视可读和可写事件
+                    ev.data.fd = client_fd;
+                    if (epoll_ctl(epollfd, EPOLL_CTL_ADD, client_fd, &ev) == -1)
+                    {
+                        perror("epoll_ctl: client_fd");
+                        close(client_fd);
+                    }
+                }
+                else
+                {
+                    printf("client max\n");
+                    close(client_fd);
+                }
+            }
+            else
+            {
+                int client_fd = events[i].data.fd;
+
+                // 处理可读事件
+                if (events[i].events & EPOLLIN)
+                {
+                    char recv_buffer[BUFFER_SIZE];
+                    ssize_t recv_len = recv(client_fd, recv_buffer, sizeof(recv_buffer), 0);
+                    if (recv_len == -1)
+                    {
+                        // perror("recv failed");
                         close(client_fd);
                         epoll_ctl(epollfd, EPOLL_CTL_DEL, client_fd, NULL);
 
@@ -791,6 +999,18 @@ void *double_thread_func(void *arg)
     return NULL;
 }
 
+// 显示线程函数
+void *xianshi_thread_func(void *arg)
+{
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+    // mvwprintw(win, 25, 1, "上传线程启动...\n");
+    pthread_cleanup_push(cleanup, NULL);
+    handle_client_connections_xianshi(listen_fd); // 执行上传任务
+    pthread_cleanup_pop(1);
+    // printf("上传任务完成，线程终止...\n");
+    return NULL;
+}
+
 // 取消当前执行的线程并创建新的任务线程
 void create_new_task(int task)
 {
@@ -822,6 +1042,10 @@ void create_new_task(int task)
     {
         pthread_create(&double_thread, NULL, double_thread_func, NULL);
     }
+    else if (task == 0)
+    {
+        pthread_create(&xianshi_thread, NULL, xianshi_thread_func, NULL);
+    }
 }
 
 void ncurses_main()
@@ -851,12 +1075,12 @@ void ncurses_main()
     win = newwin(height, width, start_y, start_x);
     box(win, 0, 0);
 
-    mvwprintw(win, 2, 5, "Broadcast addr:   192.168.1.255                   port:    9999");
+    mvwprintw(win, 2, 5, "Broadcast addr:   192.168.1.255                   port:    5202");
     mvwprintw(win, 3, 5, "size:             1470 bit", client_count);
     // mvwprintw(win, 4, 1, "Mode:             double                                     Limit:       no limit");
     mvwprintw(win, 4, 5, "1)UP    2)DOWN    3)double     4)limit    5)cancel      q)exit");
     // mvwprintw(win, 6, 1, "pre               next                                       set          limit    exit");
-    mvwprintw(win, 5, 5, "Connected device: %d                                 Run time: %d     ", 0, 0);
+    // mvwprintw(win, 5, 5, "Connected device: %d                                 Run time: %d     ", 0, 0);
     mvwprintw(win, 7, 5, "| RANK | IP             |  PORT  |  UP           |  DOWN         |");
     mvwprintw(win, 8, 6, "----------------------------------------------------------------");
     // mvwprintw(win, 15, 1, "Average bw:      0.00      |       Average bw :       0.00");
@@ -890,7 +1114,7 @@ void ncurses_main()
                     if (inet_ntop(family, &((struct sockaddr_in *)ifa->ifa_addr)->sin_addr, ip, sizeof(ip)) != NULL)
                     {
                         // printf("Interface: %s\tIP Address: %s\n", ifa->ifa_name, ip);
-                        mvwprintw(win, 1, 5, "Server    addr:   %s                   port:    %d", ip, PORT);
+                        mvwprintw(win, 1, 5, "Server    addr:   %s                   port:    %d", ip, 5201);
                         wrefresh(win);
                     }
                 }
@@ -903,8 +1127,16 @@ void ncurses_main()
     nodelay(win, TRUE); // 设置窗口为非阻塞模式
     while (1)
     {
+
         int ch = wgetch(win); // 等待用户输入
-        if (ch == 'q')
+
+        if (ch == '0')
+        {
+            global_var = 0; // 显示任务
+            // mvwprintw(win, 23, 1, "切换到上传任务...");
+            create_new_task(0); // 切换到上传任务
+        }
+        else if (ch == 'q')
         {
             break; // 退出程序
         }
@@ -963,7 +1195,7 @@ void ncurses_main()
             input[i] = '\0'; // 添加字符串结束符
 
             // 显示输入结果
-            mvwprintw(win, 6, 5, "Limited: %s", input);
+            mvwprintw(win, 6, 5, "Limited: %s      ", input);
             input_1 = atoi(input);
             wrefresh(win);
         }

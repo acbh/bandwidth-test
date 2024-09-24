@@ -839,7 +839,7 @@ void ncurses_main()
     // mvwprintw(win, 4, 1, "Mode:             double                                     Limit:       no limit");
     mvwprintw(win, 4, 5, "1)UP    2)DOWN    3)double     4)limit    5)cancel      q)exit");
     // mvwprintw(win, 6, 1, "pre               next                                       set          limit    exit");
-    mvwprintw(win, 5, 5, "Connected device: %d                                 Run time: %d     ", 0, 0);
+    // mvwprintw(win, 5, 5, "Connected device: %d                                 Run time: %d     ", 0, 0);
     mvwprintw(win, 7, 5, "| RANK | IP             |  PORT  |  UP           |  DOWN         |");
     mvwprintw(win, 8, 6, "----------------------------------------------------------------");
     // mvwprintw(win, 15, 1, "Average bw:      0.00      |       Average bw :       0.00");
